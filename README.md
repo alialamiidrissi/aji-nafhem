@@ -88,7 +88,9 @@ echo "GEMINI_API_KEY=your_key_here" > .env
 
 ### TTS Server
 
-Aji Nafhem uses a local [Coqui XTTS](https://github.com/coqui-ai/TTS) model fine-tuned on Moroccan Darija. The pipeline calls it at `http://localhost:8000/tts`.
+Aji Nafhem uses a local [Coqui XTTS](https://github.com/coqui-ai/TTS) model fine-tuned on Moroccan Darija, specifically [`medmac01/darija_xtt_2.0`](https://huggingface.co/medmac01/darija_xtt_2.0) from Hugging Face. The pipeline calls it at `http://localhost:8000/tts`.
+
+**Download the model** from Hugging Face: [medmac01/darija_xtt_2.0](https://huggingface.co/medmac01/darija_xtt_2.0)
 
 **Required files** — place these under `model/` in the project root:
 
