@@ -76,7 +76,7 @@ nafham/
 
 ## Setup
 
-**Requirements:** Python 3.11+, [Manim Community Edition](https://docs.manim.community/en/stable/installation.html), a local TTS server at `http://localhost:8000/tts`
+**Requirements:** Python 3.11+, [Manim Community Edition](https://docs.manim.community/en/stable/installation.html)
 
 ```bash
 # Install dependencies
@@ -85,6 +85,31 @@ uv pip install -r requirements.txt   # or: pip install -e .
 # Set your Gemini API key
 echo "GEMINI_API_KEY=your_key_here" > .env
 ```
+
+### TTS Server
+
+Aji Nafhem uses a local [Coqui XTTS](https://github.com/coqui-ai/TTS) model fine-tuned on Moroccan Darija. The pipeline calls it at `http://localhost:8000/tts`.
+
+**Required files** — place these under `model/` in the project root:
+
+```
+model/
+├── model.pth               # fine-tuned XTTS checkpoint
+├── config.json             # XTTS config
+├── vocab.json              # vocabulary
+└── speaker_reference.wav   # reference audio for voice cloning
+```
+
+**Start the server** before running any pipeline:
+
+```bash
+# Runs on port 8000, uses Apple MPS by default (change device in coqui_server.py for CUDA/CPU)
+python coqui_server.py
+```
+
+Health check: `curl http://localhost:8000/health` → `{"status": "ok"}`
+
+> If the TTS server is unreachable, the pipeline will substitute 1-second silent WAV files so Manim can still compile and render — the video will have no voiceover but all animations will be present.
 
 ---
 
