@@ -21,6 +21,7 @@ from agentic_video_gen.agents import (
     get_script_agent,
     get_svg_agent,
     get_manim_agent,
+    get_manim_fix_agent,
 )
 from agentic_video_gen.utils import generate_sounds_from_api, setup_assets_impl
 
@@ -126,6 +127,7 @@ def run_pipeline(
     audience_level: str = DEFAULT_AUDIENCE,
     run_id: str | None = None,
     from_step: int = 1,
+    nudges: dict[int, str] | None = None,
 ):
     """
     Runs the full educational video generation pipeline.
@@ -140,6 +142,9 @@ def run_pipeline(
         run_id:         Reuse an existing run directory (for resumption).
         from_step:      Which step to start from (1–5). Steps before this
                         are loaded from saved checkpoints.
+        nudges:         Optional per-step extra instructions, keyed by step
+                        number (1–4). Each nudge is appended only to that
+                        step's prompt. E.g. {3: "use warmer colours", 4: "..."}
     """
     if run_id is None:
         run_id = str(uuid.uuid4())
@@ -160,13 +165,21 @@ def run_pipeline(
     print(f"From step:  {from_step}")
     print("====================================")
 
+    # Write run metadata as JSON so multi-line queries are handled correctly
+    with open(run_dir / "run_info.json", "w", encoding="utf-8") as f:
+        json.dump({"run_id": run_id, "query": query, "audience": audience_level}, f, ensure_ascii=False, indent=2)
+    def _nudge(step: int) -> str:
+        """Return the nudge suffix for the given step, or empty string."""
+        text = (nudges or {}).get(step, "").strip()
+        return f"\n\n[EXTRA INSTRUCTIONS — apply to this step only]\n{text}" if text else ""
+
     # --------------------------------------------------
     # Node 1: Analytical Solver
     # --------------------------------------------------
     if from_step <= 1:
         print("\n[Step 1] Solving / Analyzing the topic...")
         solver_agent = get_solver_agent()
-        _prompt1 = f"Audience Level: {audience_level}\nQuery: {query}"
+        _prompt1 = f"Audience Level: {audience_level}\nQuery: {query}" + _nudge(1)
         solver_result = solver_agent.run_sync(_prompt1)
         solved_steps: SolvedSteps = solver_result.output
         _log_model_call(run_dir, 1, _prompt1, solver_result)
@@ -189,11 +202,12 @@ def run_pipeline(
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
             f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}"
-        )
+        ) + _nudge(2)
         script_result = script_agent.run_sync(_prompt2)
         script: ScriptSegments = script_result.output
         _log_model_call(run_dir, 2, _prompt2, script_result)
         _save_checkpoint(run_dir, 2, script)
+        generate_sounds_from_api(script.segments, audios_dir)
     else:
         print("\n[Step 2] Loading from checkpoint (skipped)...")
         script: ScriptSegments = _load_checkpoint(run_dir, 2)
@@ -213,7 +227,7 @@ def run_pipeline(
             f"Original Query: {query}\n\n"
             f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}\n\n"
             f"Voiceover Script:\n{script.model_dump_json(indent=2)}"
-        )
+        ) + _nudge(3)
         svg_result = svg_agent.run_sync(_prompt3)
         svgs: VisualAssets = svg_result.output
         _log_model_call(run_dir, 3, _prompt3, svg_result)
@@ -221,7 +235,6 @@ def run_pipeline(
 
         assets_dict = {asset.name: asset.raw_svg_code for asset in svgs.assets}
         setup_assets_impl(assets_dir, assets_dict)
-        generate_sounds_from_api(script.segments, audios_dir)
     else:
         print("\n[Step 3] Loading from checkpoint (skipped)...")
         svgs: VisualAssets = _load_checkpoint(run_dir, 3)
@@ -257,7 +270,7 @@ def run_pipeline(
             f"Available SVG Assets (load with self.get_svg(name)):\n"
             f"{asset_metadata_list}\n\n"
             f"Run directory (pass as run_dir to super().__init__ or handle via env): {run_dir}"
-        )
+        ) + _nudge(4)
         manim_result = manim_agent.run_sync(_prompt4)
         manim_code: ManimCode = manim_result.output
         _log_model_call(run_dir, 4, _prompt4, manim_result)
@@ -277,9 +290,7 @@ def run_pipeline(
                 f.write(code_content)
             print(f"  Scene code restored to {out_file}.")
 
-    # Also write a small metadata file for reference
-    with open(run_dir / "run_info.txt", "w", encoding="utf-8") as f:
-        f.write(f"Run ID: {run_id}\nQuery: {query}\nAudience: {audience_level}\n")
+
 
     # --------------------------------------------------
     # Node 5: Compilation Validation Loop (self-correcting)
@@ -305,23 +316,35 @@ def run_pipeline(
                 break
             else:
                 error_trace = (compilation.stderr or "") + (compilation.stdout or "")
-                print(f"\n  ❌ Compilation failed. Error:\n{error_trace[:500]}")
+                print(f"\n  ❌ Compilation failed. Error:\n{error_trace}")
 
+                current_code = out_file.read_text(encoding="utf-8")
                 _fix_prompt = (
-                    f"Your Manim code failed to compile. Error:\n{error_trace}\n\n"
-                    f"Please fix the code and return the complete corrected Python file."
+                    f"The following Manim Python file failed to compile.\n\n"
+                    f"--- COMPILATION ERROR ---\n{error_trace}\n\n"
+                    f"--- CURRENT SOURCE ---\n{current_code}"
                 )
-                fix_result = get_manim_agent().run_sync(_fix_prompt)
+                fix_result = get_manim_fix_agent().run_sync(_fix_prompt)
                 _log_model_call(run_dir, "manim_fix", _fix_prompt, fix_result)
-                fixed_code = extract_code_fence(fix_result.output.python_code)
-                with open(out_file, "w", encoding="utf-8") as f:
-                    f.write(fixed_code)
+
+                patch = fix_result.output
+                print(f"  Fix explanation: {patch.explanation}")
+                patched_code = current_code
+                applied = 0
+                for change in patch.changes:
+                    if change.old_code in patched_code:
+                        patched_code = patched_code.replace(change.old_code, change.new_code, 1)
+                        applied += 1
+                    else:
+                        print(f"  ⚠️  Could not find snippet to patch:\n{change.old_code[:120]}...")
+                print(f"  Applied {applied}/{len(patch.changes)} patch(es).")
+                out_file.write_text(patched_code, encoding="utf-8")
         else:
             print("\n⚠️  Could not compile after max retries. Inspect the file manually.")
 
     print(f"\nDone! Run artifacts saved to: {run_dir}/")
     print("To render the video, run:")
-    print(f"  manim -qm {out_file} GeneratedEducationalScene")
+    print(f"MANIM_RUN_DIR={run_dir} manim -qm {out_file} GeneratedEducationalScene")
     return run_dir
 
 
@@ -340,19 +363,23 @@ def resume_pipeline(run_id: str, from_step: int | None = None):
     if not run_dir.exists():
         raise FileNotFoundError(f"Run directory not found: {run_dir}")
 
-    # Load query / audience from run_info.txt
-    info_file = run_dir / "run_info.txt"
-    if not info_file.exists():
-        raise FileNotFoundError(f"run_info.txt missing in {run_dir}")
-
-    info = {}
-    for line in info_file.read_text(encoding="utf-8").splitlines():
-        if ": " in line:
-            k, v = line.split(": ", 1)
-            info[k.strip()] = v.strip()
-
-    query = info.get("Query", "")
-    audience_level = info.get("Audience", DEFAULT_AUDIENCE)
+    # Load query / audience from run_info.json (falls back to legacy run_info.txt)
+    info_json = run_dir / "run_info.json"
+    info_txt = run_dir / "run_info.txt"
+    if info_json.exists():
+        info = json.loads(info_json.read_text(encoding="utf-8"))
+        query = info.get("query", "")
+        audience_level = info.get("audience", DEFAULT_AUDIENCE)
+    elif info_txt.exists():
+        info = {}
+        for line in info_txt.read_text(encoding="utf-8").splitlines():
+            if ": " in line:
+                k, v = line.split(": ", 1)
+                info[k.strip()] = v.strip()
+        query = info.get("Query", "")
+        audience_level = info.get("Audience", DEFAULT_AUDIENCE)
+    else:
+        raise FileNotFoundError(f"run_info.json missing in {run_dir}")
 
     if from_step is None:
         completed = _detect_completed_steps(run_dir)
