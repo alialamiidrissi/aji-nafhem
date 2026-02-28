@@ -19,9 +19,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
-!web_ui/lib/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
