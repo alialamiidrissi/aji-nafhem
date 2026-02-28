@@ -82,7 +82,9 @@ _SOLVER_PROMPT = (
     "For each step, write a 'description' that freely mixes prose with inline LaTeX-style equations "
     "where relevant, e.g., \"The force is $F = ma$, so doubling mass doubles the force required.\" "
     "Equations appear naturally alongside their explanation — not in a separate list. "
-    "Do NOT write any visualization or animation code."
+    "Do NOT write any visualization or animation code. "
+    "If a [PREVIOUS SCENES CONTEXT] block is present in your input, respect it: do not repeat concepts "
+    "already covered in earlier scenes, and build on them naturally to maintain narrative continuity."
 )
 
 # ---------------------------------------------------------
@@ -126,7 +128,9 @@ _SCRIPT_PROMPT = (
     "at the exact moment that segment is spoken.\n"
     "- Visuals must tightly synchronize with the spoken content.\n\n"
 
-    "The final result must be optimized for spoken clarity, pacing, and audiovisual synchronization."
+    "The final result must be optimized for spoken clarity, pacing, and audiovisual synchronization. "
+    "If a [PREVIOUS SCENES CONTEXT] block is present in your input, do NOT repeat voiceover segments "
+    "that already appeared in earlier scenes — pick up the narrative where the previous scene left off."
 )
 # ---------------------------------------------------------
 # Node 3: SVG Asset Generator
@@ -254,6 +258,50 @@ def get_solver_agent() -> Agent:
 
 def get_script_agent() -> Agent:
     return _make_agent(_FLASH, ScriptSegments, _SCRIPT_PROMPT)
+
+
+_SCRIPT_REVIEW_PROMPT = (
+    "You are a script coherence reviewer for Moroccan Darija educational videos.\n\n"
+
+    "You will receive:\n"
+    "  - 'Original Query': the learner's question.\n"
+    "  - 'Analytical Solution': the solved steps JSON.\n"
+    "  - 'Draft Script': a JSON ScriptSegments object with segments, each containing:\n"
+    "      id, script (Darija voiceover text), visual_action (what the viewer sees).\n\n"
+
+    "Your task: return a corrected ScriptSegments where every segment's spoken 'script' "
+    "is fully coherent with its 'visual_action'.\n\n"
+
+    "For each segment, ask: 'Does the spoken text accurately narrate what the visual_action describes?'\n"
+    "A segment is INCOHERENT if:\n"
+    "  - The spoken text describes something different from what is shown.\n"
+    "  - The spoken text references a formula, variable, or concept that does NOT appear in the visual_action.\n"
+    "  - The visual_action shows a specific formula/result but the spoken text narrates a different formula.\n\n"
+
+    "Correction rules:\n"
+    "  - Rewrite the 'script' field (Darija) so it narrates exactly what the visual_action shows.\n"
+    "  - You may also fix the 'visual_action' if it is clearly wrong and the script is correct — "
+    "but prefer fixing the script.\n"
+    "  - Do NOT change segment ids or reorder segments.\n"
+    "  - Do NOT merge or split segments.\n"
+    "  - Preserve all original script rules: Arabic letters only, heavy tashkeel, no Latin/symbols, "
+    "no mathematical notation — rewrite all formulas in Arabic words.\n"
+    "  - If a segment is already coherent, copy it unchanged.\n\n"
+
+    "TTS QUALITY PASS — apply to every segment (even unchanged ones):\n"
+    "  - Add full, consistent tashkeel (diacritics) on every word.\n"
+    "  - Replace phonetically complex or ambiguous Darija words with simpler equivalents "
+    "that a TTS engine will pronounce naturally (e.g. avoid rare consonant clusters, "
+    "unusual shadda combinations, or words with no clear vowel pattern).\n"
+    "  - The result must still sound like natural spoken Darija and remain pedagogically clear — "
+    "do NOT sacrifice meaning for simplicity.\n\n"
+
+    "Return the full corrected ScriptSegments (all segments, even unchanged ones)."
+)
+
+
+def get_script_review_agent() -> Agent:
+    return _make_agent(_FLASH, ScriptSegments, _SCRIPT_REVIEW_PROMPT)
 
 def get_svg_agent() -> Agent:
     return _make_agent(_FLASH, VisualAssets, _SVG_PROMPT)

@@ -66,12 +66,17 @@ def _read_run_info(run_dir: Path) -> dict | None:
 
 
 def _list_runs() -> list[str]:
-    """Return run choices as 'run_id — query' strings, newest first."""
+    """Return run choices as 'run_id — query' strings, newest first.
+
+    Skips the projects/ subdirectory so project scenes don't appear here.
+    """
     if not RUNS_DIR.exists():
         return []
     choices = []
     for d in sorted(RUNS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if not d.is_dir():
+            continue
+        if d.name == "projects":  # skip multi-scene project dirs
             continue
         info = _read_run_info(d)
         if info is None:
@@ -148,6 +153,7 @@ def _run_pipeline_thread(
     run_id: str | None = None,
     from_step: int = 1,
     nudges: dict | None = None,
+    force_fix_prompt: str | None = None,
 ):
     """Target for the pipeline thread. Captures stdout into log_q."""
     orig_stdout = sys.stdout
@@ -163,6 +169,7 @@ def _run_pipeline_thread(
             run_id=run_id,
             from_step=from_step,
             nudges=nudges or None,
+            force_fix_prompt=force_fix_prompt or None,
         )
         result_box["run_dir"] = run_dir
     except Exception as exc:
@@ -199,6 +206,8 @@ def _run_render_thread(run_dir: Path, log_q: queue.Queue, result_box: dict):
     if proc.returncode == 0:
         video_path = PROJECT_DIR / "media/videos/generated_scene/720p30/GeneratedEducationalScene.mp4"
         if video_path.exists():
+            # Persist a copy next to the run artifacts for stitching and resumption
+            shutil.copy2(video_path, run_dir / "rendered_video.mp4")
             result_box["video"] = str(video_path)
             log_q.put(f"\n✅ Render complete → {video_path}\n")
         else:
@@ -219,6 +228,7 @@ def _stream_pipeline_and_render(
     run_id: str | None = None,
     from_step: int = 1,
     nudges: dict | None = None,
+    force_fix_prompt: str | None = None,
 ):
     """Generator: runs pipeline thread, then render thread, yielding (logs, video, done)."""
     log_q: queue.Queue = queue.Queue()
@@ -228,7 +238,7 @@ def _stream_pipeline_and_render(
     t = threading.Thread(
         target=_run_pipeline_thread,
         args=(query, audience, log_q, result_box),
-        kwargs={"run_id": run_id, "from_step": from_step, "nudges": nudges},
+        kwargs={"run_id": run_id, "from_step": from_step, "nudges": nudges, "force_fix_prompt": force_fix_prompt},
         daemon=True,
     )
     t.start()
@@ -332,7 +342,7 @@ def _run_preview(run_choice: str) -> str:
     )
 
 
-def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2: str, n3: str, n4: str):
+def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2: str, n3: str, n4: str, force_fix: str):
     """Resume an existing run from the selected step, with optional per-step nudges."""
     if not run_choice:
         yield "Please select a run.", gr.update(visible=False), gr.update(visible=False)
@@ -356,7 +366,527 @@ def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2:
 
     nudges = {k: v for k, v in {1: n1, 2: n2, 3: n3, 4: n4}.items() if v and v.strip()} or None
 
-    yield from _stream_pipeline_and_render(query, audience, run_id=run_id, from_step=from_step, nudges=nudges)
+    yield from _stream_pipeline_and_render(
+        query, audience,
+        run_id=run_id, from_step=from_step,
+        nudges=nudges,
+        force_fix_prompt=force_fix.strip() or None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Multi-Scene Project helpers
+# ---------------------------------------------------------------------------
+
+import json as _json  # local alias to avoid shadowing
+
+PROJECTS_DIR = RUNS_DIR / "projects"
+
+
+def _list_projects() -> list[str]:
+    """Return project choices as 'project_id — N scenes' strings, newest first."""
+    if not PROJECTS_DIR.exists():
+        return []
+    choices = []
+    for d in sorted(PROJECTS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not d.is_dir():
+            continue
+        info_path = d / "project_info.json"
+        if not info_path.exists():
+            continue
+        try:
+            info = _json.loads(info_path.read_text(encoding="utf-8"))
+            n = len(info.get("scenes", []))
+            choices.append(f"{info['project_id']} — {n} scene(s)")
+        except Exception:
+            pass
+    return choices
+
+
+def _parse_project_choice(choice: str) -> str:
+    """Extract project_id from 'project_id — N scene(s)' string."""
+    return choice.split(" — ")[0].strip()
+
+
+def _get_scene_choices(project_choice: str) -> list[str]:
+    """Return sorted list of scene index strings for the selected project."""
+    if not project_choice:
+        return []
+    try:
+        pid = _parse_project_choice(project_choice)
+        info_path = PROJECTS_DIR / pid / "project_info.json"
+        if not info_path.exists():
+            return []
+        info = _json.loads(info_path.read_text(encoding="utf-8"))
+        return [str(s["scene_index"]) for s in sorted(info.get("scenes", []), key=lambda s: s["scene_index"])]
+    except Exception:
+        return []
+
+
+def _render_project_markdown(project_dir: Path) -> str:
+    """Build a rich HTML/markdown summary of the project's scene list.
+
+    Each scene gets collapsible <details> blocks for its full query,
+    solver result, and voiceover script.
+    """
+    if not project_dir.exists():
+        return "*Project directory not found.*"
+    info_path = project_dir / "project_info.json"
+    if not info_path.exists():
+        return "*project_info.json not found.*"
+
+    info = _json.loads(info_path.read_text(encoding="utf-8"))
+    scenes = info.get("scenes", [])
+    carry = info.get("carry_solver_context", False)
+    audience = info.get("audience", "—")
+
+    parts = [
+        f"**Project:** `{info['project_id']}`  |  **Audience:** {audience}  |  "
+        f"**Carry solver context:** {'Yes' if carry else 'No'}\n"
+    ]
+
+    if not scenes:
+        parts.append("*No scenes yet. Add a scene below.*")
+        return "\n".join(parts)
+
+    for entry in scenes:
+        idx = entry["scene_index"]
+        source = entry.get("source", "native")
+        query_text = entry.get("query", "—")
+        scene_dir = RUNS_DIR / entry["scene_dir"]
+
+        has_video = (scene_dir / "rendered_video.mp4").exists()
+        has_script = (scene_dir / "checkpoint_step2_script.json").exists()
+        has_solver = (scene_dir / "checkpoint_step1_solved.json").exists()
+
+        status = "✅" if has_video else ("🔄" if has_script else "⬜")
+        cp_badges = "  ".join(
+            ("✅" if (scene_dir / fname).exists() else "⬜") + label
+            for fname, label in [
+                ("checkpoint_step1_solved.json", "solver"),
+                ("checkpoint_step2_script.json", "script"),
+                ("checkpoint_step3_svgs.json", "svgs"),
+                ("checkpoint_step4_manim.json", "manim"),
+            ]
+        )
+
+        block = [
+            f"---",
+            f"### Scene {idx} {status} &nbsp; <small>`{source}`</small>",
+            f"{cp_badges}",
+            "",
+        ]
+
+        # ── Query accordion ──
+        block.append(
+            f"<details><summary><b>Query</b></summary>\n\n{query_text}\n\n</details>"
+        )
+
+        # ── Solver result accordion ──
+        if has_solver:
+            try:
+                solver = _json.loads(
+                    (scene_dir / "checkpoint_step1_solved.json").read_text(encoding="utf-8")
+                )
+                topic = solver.get("topic", "—")
+                steps_html = "\n".join(
+                    f"<li><b>Step {s['step_number']} — {s['concept']}</b><br>{s['description']}</li>"
+                    for s in solver.get("steps", [])
+                )
+                block.append(
+                    f"<details><summary><b>Solver result</b> — {topic}</summary>"
+                    f"\n\n<ol>{steps_html}</ol>\n\n</details>"
+                )
+            except Exception:
+                block.append("<details><summary><b>Solver result</b></summary><i>Could not load.</i></details>")
+        else:
+            block.append("<details><summary><b>Solver result</b></summary><i>Not yet generated.</i></details>")
+
+        # ── Script accordion ──
+        if has_script:
+            try:
+                script = _json.loads(
+                    (scene_dir / "checkpoint_step2_script.json").read_text(encoding="utf-8")
+                )
+                segs_html = "\n".join(
+                    f"<li><b>[{s['id']}]</b> {s['script']}<br><i>Visual: {s['visual_action']}</i></li>"
+                    for s in script.get("segments", [])
+                )
+                block.append(
+                    f"<details><summary><b>Voiceover script</b> "
+                    f"({len(script.get('segments', []))} segments)</summary>"
+                    f"\n\n<ol>{segs_html}</ol>\n\n</details>"
+                )
+            except Exception:
+                block.append("<details><summary><b>Voiceover script</b></summary><i>Could not load.</i></details>")
+        else:
+            block.append("<details><summary><b>Voiceover script</b></summary><i>Not yet generated.</i></details>")
+
+        parts.append("\n".join(block))
+
+    return "\n\n".join(parts)
+
+
+def _list_importable_sources() -> list[str]:
+    """All standalone runs + all project scenes, formatted for import dropdown."""
+    sources: list[str] = []
+
+    # Standalone runs
+    if RUNS_DIR.exists():
+        for d in sorted(RUNS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if not d.is_dir() or d.name == "projects":
+                continue
+            info = _read_run_info(d)
+            if info is None:
+                continue
+            query_preview = info["query"].replace("\n", " ")[:50]
+            sources.append(f"run:{d.name} — {query_preview}")
+
+    # Project scenes
+    if PROJECTS_DIR.exists():
+        for proj_d in sorted(PROJECTS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            if not proj_d.is_dir():
+                continue
+            info_path = proj_d / "project_info.json"
+            if not info_path.exists():
+                continue
+            try:
+                proj_info = _json.loads(info_path.read_text(encoding="utf-8"))
+                for entry in proj_info.get("scenes", []):
+                    scene_dir = RUNS_DIR / entry["scene_dir"]
+                    if (scene_dir / "run_info.json").exists():
+                        query_preview = entry.get("query", "—")[:40]
+                        sources.append(
+                            f"scene:{entry['scene_dir']} — {proj_info['project_id']} #{entry['scene_index']} — {query_preview}"
+                        )
+            except Exception:
+                pass
+
+    return sources
+
+
+def _parse_import_source(source_choice: str) -> Path:
+    """Convert an import source choice string to an absolute Path."""
+    # Formats: "run:{uuid} — ..." or "scene:{rel_path} — ..."
+    _, rest = source_choice.split(":", 1)
+    path_part = rest.split(" — ")[0].strip()
+    return (RUNS_DIR / path_part).resolve()
+
+
+# ---------------------------------------------------------------------------
+# Project UI action functions (called from Gradio event handlers)
+# ---------------------------------------------------------------------------
+
+def _new_project_ui(audience: str, carry_solver: bool) -> tuple[str, str]:
+    """Create a new project. Returns (status_msg, new_project_choice)."""
+    from agentic_video_gen.projects import create_project
+    try:
+        project_id, _ = create_project(audience, carry_solver)
+        choice = f"{project_id} — 0 scene(s)"
+        return f"✅ Created project `{project_id}`", choice
+    except Exception as e:
+        return f"❌ Error: {e}", ""
+
+
+def _fork_project_ui(project_choice: str) -> tuple[str, str]:
+    """Fork a project. Returns (status_msg, new_project_choice)."""
+    if not project_choice:
+        return "Please select a project first.", ""
+    from agentic_video_gen.projects import fork_project
+    project_id = _parse_project_choice(project_choice)
+    project_dir = PROJECTS_DIR / project_id
+    try:
+        new_id, new_dir = fork_project(project_dir)
+        choice = f"{new_id} — {len(_json.loads((new_dir / 'project_info.json').read_text())['scenes'])} scene(s)"
+        return f"✅ Forked to `{new_id}`", choice
+    except Exception as e:
+        return f"❌ Error: {e}", ""
+
+
+def _remove_scene_ui(project_choice: str, scene_index_str: str) -> tuple[str, str]:
+    """Remove a scene from the project."""
+    if not project_choice or not scene_index_str:
+        return "Select a project and scene index.", ""
+    from agentic_video_gen.projects import remove_scene
+    project_id = _parse_project_choice(project_choice)
+    project_dir = PROJECTS_DIR / project_id
+    try:
+        idx = int(scene_index_str)
+        remove_scene(project_dir, idx)
+        md = _render_project_markdown(project_dir)
+        return f"✅ Removed scene {idx}.", md
+    except Exception as e:
+        return f"❌ Error: {e}", ""
+
+
+def _import_scene_ui(
+    project_choice: str,
+    source_choice: str,
+    query_override: str,
+) -> tuple[str, str]:
+    """Import an existing run/scene into the project as the next scene."""
+    if not project_choice or not source_choice:
+        return "Select a project and source.", ""
+    from agentic_video_gen.projects import import_scene, load_project_info
+    project_id = _parse_project_choice(project_choice)
+    project_dir = PROJECTS_DIR / project_id
+    try:
+        info = load_project_info(project_dir)
+        next_idx = max((s["scene_index"] for s in info["scenes"]), default=0) + 1
+        source_path = _parse_import_source(source_choice)
+        import_scene(
+            project_dir,
+            next_idx,
+            source_path,
+            query_override=query_override.strip() or None,
+        )
+        md = _render_project_markdown(project_dir)
+        return f"✅ Imported as scene {next_idx}.", md
+    except Exception as e:
+        return f"❌ Error: {e}", ""
+
+
+def _run_project_scene_ui(
+    project_choice: str,
+    scene_query: str,
+    from_step_str: str,
+    nudges_dict: dict,
+    log_q: "queue.Queue",
+    result_box: dict,
+    scene_index: int | None = None,
+    force_fix_prompt: str | None = None,
+):
+    """Thread target: run a project scene and stream logs.
+
+    If scene_index is None, appends as the next scene.
+    If scene_index is given, re-runs that existing scene in place.
+    """
+    from agentic_video_gen.projects import run_project_scene, load_project_info
+
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
+    writer = _QueueWriter(log_q)
+    sys.stdout = writer
+    sys.stderr = writer
+    try:
+        project_id = _parse_project_choice(project_choice)
+        project_dir = PROJECTS_DIR / project_id
+        info = load_project_info(project_dir)
+        if scene_index is None:
+            scene_index = max((s["scene_index"] for s in info["scenes"]), default=0) + 1
+        from_step = int(from_step_str.split(" — ")[0].strip()) if " — " in from_step_str else int(from_step_str)
+        audience = info["audience"]
+        carry = info["carry_solver_context"]
+
+        run_dir = run_project_scene(
+            project_id=project_id,
+            scene_index=scene_index,
+            query=scene_query,
+            audience_level=audience,
+            carry_solver_context=carry,
+            from_step=from_step,
+            nudges=nudges_dict or None,
+            force_fix_prompt=force_fix_prompt,
+        )
+        result_box["run_dir"] = run_dir
+        result_box["scene_index"] = scene_index
+    except Exception as exc:
+        log_q.put(f"\n❌ Error: {exc}\n")
+        import traceback
+        log_q.put(traceback.format_exc())
+        result_box["error"] = str(exc)
+    finally:
+        sys.stdout = orig_stdout
+        sys.stderr = orig_stderr
+        log_q.put(None)
+
+
+def _stream_project_scene(
+    project_choice: str,
+    scene_query: str,
+    from_step_str: str,
+    n1: str, n2: str, n3: str, n4: str,
+):
+    """Generator: run project scene pipeline then render, yield (logs, video, md, scene_choices)."""
+    no_choices = gr.update()
+    if not project_choice or not scene_query.strip():
+        yield "Please select a project and enter a query.", gr.update(visible=False), "*—*", no_choices
+        return
+
+    nudges = {k: v for k, v in {1: n1, 2: n2, 3: n3, 4: n4}.items() if v and v.strip()} or None
+    log_q: queue.Queue = queue.Queue()
+    result_box: dict = {}
+    accumulated = ""
+
+    t = threading.Thread(
+        target=_run_project_scene_ui,
+        args=(project_choice, scene_query, from_step_str, nudges, log_q, result_box),
+        daemon=True,
+    )
+    t.start()
+    yield "Starting scene pipeline...\n", gr.update(visible=False), "*Running...*", no_choices
+
+    while True:
+        try:
+            msg = log_q.get(timeout=0.2)
+        except queue.Empty:
+            yield accumulated, gr.update(visible=False), "*Running...*", no_choices
+            continue
+        if msg is None:
+            break
+        accumulated += msg
+        yield accumulated, gr.update(visible=False), "*Running...*", no_choices
+
+    t.join()
+
+    if "error" in result_box:
+        yield accumulated, gr.update(visible=False), "*Pipeline failed.*", no_choices
+        return
+
+    run_dir: Path = result_box["run_dir"]
+    log_q2: queue.Queue = queue.Queue()
+    result_box2: dict = {}
+
+    t2 = threading.Thread(
+        target=_run_render_thread,
+        args=(run_dir, log_q2, result_box2),
+        daemon=True,
+    )
+    t2.start()
+
+    while True:
+        try:
+            msg = log_q2.get(timeout=0.2)
+        except queue.Empty:
+            yield accumulated, gr.update(visible=False), "*Rendering...*", no_choices
+            continue
+        if msg is None:
+            break
+        accumulated += msg
+        yield accumulated, gr.update(visible=False), "*Rendering...*", no_choices
+
+    t2.join()
+
+    project_id = _parse_project_choice(project_choice)
+    project_dir = PROJECTS_DIR / project_id
+    md = _render_project_markdown(project_dir)
+    scene_choices = gr.update(choices=_get_scene_choices(project_choice))
+
+    if "video" in result_box2:
+        yield accumulated, gr.update(visible=True, value=result_box2["video"]), md, scene_choices
+    else:
+        yield accumulated, gr.update(visible=False), md, scene_choices
+
+
+def _stream_rerun_scene(
+    project_choice: str,
+    scene_idx_str: str,
+    from_step_str: str,
+    rr_n1: str, rr_n2: str, rr_n3: str, rr_n4: str,
+    rr_force_fix: str,
+):
+    """Generator: re-run an existing native scene from the chosen step."""
+    no_choices = gr.update()
+    if not project_choice or not scene_idx_str:
+        yield "Select a project and scene.", gr.update(visible=False), "*—*", no_choices
+        return
+    from agentic_video_gen.projects import load_project_info
+    try:
+        project_id = _parse_project_choice(project_choice)
+        project_dir = PROJECTS_DIR / project_id
+        info = load_project_info(project_dir)
+        idx = int(scene_idx_str)
+        entry = next((s for s in info["scenes"] if s["scene_index"] == idx), None)
+        if entry is None:
+            yield f"Scene {idx} not found.", gr.update(visible=False), "*—*", no_choices
+            return
+        if entry.get("source") == "imported":
+            yield f"Scene {idx} is imported — re-run the original run instead.", gr.update(visible=False), "*—*", no_choices
+            return
+        query = entry["query"]
+    except Exception as exc:
+        import traceback
+        yield f"❌ {exc}\n{traceback.format_exc()}", gr.update(visible=False), "*—*", no_choices
+        return
+
+    nudges = {k: v for k, v in {1: rr_n1, 2: rr_n2, 3: rr_n3, 4: rr_n4}.items() if v and v.strip()} or None
+    force_fix = rr_force_fix.strip() or None
+
+    log_q: queue.Queue = queue.Queue()
+    result_box: dict = {}
+    accumulated = ""
+
+    t = threading.Thread(
+        target=_run_project_scene_ui,
+        args=(project_choice, query, from_step_str, nudges, log_q, result_box),
+        kwargs={"scene_index": idx, "force_fix_prompt": force_fix},
+        daemon=True,
+    )
+    t.start()
+    yield f"Re-running scene {idx} from {from_step_str}...\n", gr.update(visible=False), "*Running...*", no_choices
+
+    while True:
+        try:
+            msg = log_q.get(timeout=0.2)
+        except queue.Empty:
+            yield accumulated, gr.update(visible=False), "*Running...*", no_choices
+            continue
+        if msg is None:
+            break
+        accumulated += msg
+        yield accumulated, gr.update(visible=False), "*Running...*", no_choices
+
+    t.join()
+
+    if "error" in result_box:
+        yield accumulated, gr.update(visible=False), "*Pipeline failed.*", no_choices
+        return
+
+    run_dir: Path = result_box["run_dir"]
+    log_q2: queue.Queue = queue.Queue()
+    result_box2: dict = {}
+
+    t2 = threading.Thread(
+        target=_run_render_thread,
+        args=(run_dir, log_q2, result_box2),
+        daemon=True,
+    )
+    t2.start()
+
+    while True:
+        try:
+            msg = log_q2.get(timeout=0.2)
+        except queue.Empty:
+            yield accumulated, gr.update(visible=False), "*Rendering...*", no_choices
+            continue
+        if msg is None:
+            break
+        accumulated += msg
+        yield accumulated, gr.update(visible=False), "*Rendering...*", no_choices
+
+    t2.join()
+
+    md = _render_project_markdown(project_dir)
+    scene_choices = gr.update(choices=_get_scene_choices(project_choice))
+
+    if "video" in result_box2:
+        yield accumulated, gr.update(visible=True, value=result_box2["video"]), md, scene_choices
+    else:
+        yield accumulated, gr.update(visible=False), md, scene_choices
+
+
+def _stitch_videos_ui(project_choice: str) -> tuple[str, object]:
+    """Stitch all scene videos in the project."""
+    if not project_choice:
+        return "Select a project first.", gr.update(visible=False)
+    from agentic_video_gen.stitch import stitch_project_videos
+    project_id = _parse_project_choice(project_choice)
+    project_dir = PROJECTS_DIR / project_id
+    try:
+        output = stitch_project_videos(project_dir)
+        return f"✅ Stitched video saved to `{output}`", gr.update(visible=True, value=str(output))
+    except Exception as e:
+        return f"❌ Stitch failed: {e}", gr.update(visible=False)
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +973,16 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 nudge3 = gr.Textbox(label="Step 3 — SVG Assets", lines=2, placeholder="e.g. 'Use warmer colors, avoid circular shapes'")
                 nudge4 = gr.Textbox(label="Step 4 — Manim Code", lines=2, placeholder="e.g. 'Animate each element with a fade-in'")
 
+            force_fix_input = gr.Textbox(
+                label="Visual fix description (force-fix at step 5)",
+                lines=3,
+                placeholder=(
+                    "Describe what looks wrong in the rendered video and how to fix it.\n"
+                    "e.g. 'The formula and the diagram overlap in the middle — move the formula to the top edge'\n"
+                    "Leave blank to skip. Applied before the compilation loop when resuming from step 5."
+                ),
+            )
+
             resume_btn = gr.Button("Resume from Step", variant="primary", size="lg")
 
             resume_logs = gr.Textbox(label="Live Logs", lines=20, max_lines=40, interactive=False, autoscroll=True)
@@ -458,8 +998,278 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
 
             resume_btn.click(
                 fn=resume_video,
-                inputs=[run_dropdown, step_radio, copy_run_checkbox, nudge1, nudge2, nudge3, nudge4],
+                inputs=[run_dropdown, step_radio, copy_run_checkbox, nudge1, nudge2, nudge3, nudge4, force_fix_input],
                 outputs=[resume_logs, resume_video_out, resume_done],
+            )
+
+        # ── Tab 3: Multi-Scene Project ───────────────────────────────────
+        with gr.Tab("Multi-Scene Project"):
+            gr.Markdown(
+                "Create a **project** that groups multiple scenes into one stitched video. "
+                "Each scene is a full pipeline run; context from earlier scenes is injected into later ones."
+            )
+
+            # ── Project selection row ──
+            with gr.Row():
+                proj_dropdown = gr.Dropdown(
+                    label="Project",
+                    choices=_list_projects(),
+                    interactive=True,
+                    scale=3,
+                )
+                proj_refresh_btn = gr.Button("🔄 Refresh", scale=1)
+                proj_fork_btn = gr.Button("Fork Project", scale=1)
+                proj_new_btn = gr.Button("New Project", variant="primary", scale=1)
+
+            with gr.Row():
+                proj_audience = gr.Textbox(
+                    label="Audience (for new project)",
+                    value=DEFAULT_AUDIENCE,
+                    scale=2,
+                )
+                proj_carry_solver = gr.Checkbox(
+                    label="Carry solver context in prompts",
+                    value=False,
+                    scale=1,
+                )
+
+            proj_status = gr.Markdown("*Select or create a project.*")
+
+            # ── Scene list ──
+            gr.Markdown("### Scene List")
+            proj_scene_list = gr.Markdown("*No project selected.*")
+
+            with gr.Accordion("🎬 Scene video preview", open=False):
+                proj_scene_preview_video = gr.Video(
+                    label="Selected scene video",
+                    interactive=False,
+                    visible=True,
+                )
+
+            # ── Action controls (below scene list) ──
+            gr.Markdown("### Re-run / Remove Scene")
+            with gr.Row():
+                proj_scene_select = gr.Dropdown(
+                    label="Select scene",
+                    choices=[],
+                    value=None,
+                    interactive=True,
+                    scale=3,
+                )
+                proj_remove_btn = gr.Button("🗑 Remove", scale=1)
+
+            with gr.Row():
+                proj_rerun_step = gr.Dropdown(
+                    label="Re-run from step",
+                    choices=STEP_CHOICES,
+                    value=STEP_CHOICES[0],
+                    interactive=True,
+                    scale=3,
+                )
+                proj_rerun_btn = gr.Button("▶ Re-run Scene", variant="primary", scale=1)
+
+            rr_force_fix = gr.Textbox(
+                label="Visual fix description (force-fix at step 5)",
+                lines=2,
+                placeholder=(
+                    "Describe what looks wrong visually — e.g. 'formula overlaps the diagram, move it to the top edge'. "
+                    "Leave blank to skip."
+                ),
+            )
+            with gr.Accordion("Per-step nudges for re-run (optional)", open=False):
+                rr_nudge1 = gr.Textbox(label="Step 1 — Solver", lines=2)
+                rr_nudge2 = gr.Textbox(label="Step 2 — Script", lines=2)
+                rr_nudge3 = gr.Textbox(label="Step 3 — SVGs", lines=2)
+                rr_nudge4 = gr.Textbox(label="Step 4 — Manim", lines=2)
+
+            # ── Add scene section ──
+            gr.Markdown("### Add Scene")
+            add_scene_mode = gr.Radio(
+                label="Mode",
+                choices=["Generate new scene", "Import existing scene"],
+                value="Generate new scene",
+            )
+
+            with gr.Column(visible=True) as gen_scene_col:
+                scene_query_input = gr.Textbox(
+                    label="Query for next scene",
+                    lines=4,
+                    placeholder="e.g. Part a: finding the discriminant",
+                )
+                scene_query_preview = gr.Markdown(value="*Query preview will appear here...*")
+                gen_from_step = gr.Dropdown(
+                    label="Start from step",
+                    choices=STEP_CHOICES,
+                    value=STEP_CHOICES[0],
+                )
+                with gr.Accordion("Per-step nudges (optional)", open=False):
+                    proj_nudge1 = gr.Textbox(label="Step 1 — Solver", lines=2)
+                    proj_nudge2 = gr.Textbox(label="Step 2 — Script", lines=2)
+                    proj_nudge3 = gr.Textbox(label="Step 3 — SVGs", lines=2)
+                    proj_nudge4 = gr.Textbox(label="Step 4 — Manim", lines=2)
+                run_scene_btn = gr.Button("▶ Run Next Scene", variant="primary")
+
+            with gr.Column(visible=False) as import_scene_col:
+                import_source = gr.Dropdown(
+                    label="Source run or scene",
+                    choices=_list_importable_sources(),
+                    interactive=True,
+                )
+                import_refresh_btn = gr.Button("🔄 Refresh sources")
+                import_query_override = gr.Textbox(
+                    label="Query label override (optional)",
+                    placeholder="Leave blank to use original query",
+                )
+                import_btn = gr.Button("Import Scene", variant="primary")
+
+            # ── Output ──
+            gr.Markdown("### Output")
+            proj_logs = gr.Textbox(label="Live Logs", lines=18, max_lines=40, interactive=False, autoscroll=True)
+            proj_video = gr.Video(label="Latest Scene Video", visible=False)
+
+            gr.Markdown("---")
+            stitch_btn = gr.Button("✂ Stitch All Scenes", variant="secondary")
+            stitch_status = gr.Markdown("")
+            stitched_video = gr.Video(label="Stitched Video", visible=False)
+
+            # ── Event wiring ──
+
+            scene_query_input.change(
+                fn=lambda q: q if q.strip() else "*Query preview will appear here...*",
+                inputs=scene_query_input,
+                outputs=scene_query_preview,
+            )
+
+            def _toggle_add_mode(mode):
+                return (
+                    gr.update(visible=(mode == "Generate new scene")),
+                    gr.update(visible=(mode == "Import existing scene")),
+                )
+
+            add_scene_mode.change(
+                fn=_toggle_add_mode,
+                inputs=add_scene_mode,
+                outputs=[gen_scene_col, import_scene_col],
+            )
+
+            def _refresh_projects():
+                return gr.update(choices=_list_projects())
+
+            def _on_project_select(choice):
+                if not choice:
+                    return "*Select a project.*", gr.update(choices=[], value=None)
+                pid = _parse_project_choice(choice)
+                md = _render_project_markdown(PROJECTS_DIR / pid)
+                choices = _get_scene_choices(choice)
+                return md, gr.update(choices=choices, value=choices[0] if choices else None)
+
+            def _on_scene_select_preview(project_choice, scene_idx_str):
+                """Load the rendered_video.mp4 for the selected scene into the preview player."""
+                if not project_choice or not scene_idx_str:
+                    return gr.update(value=None)
+                try:
+                    pid = _parse_project_choice(project_choice)
+                    info_path = PROJECTS_DIR / pid / "project_info.json"
+                    info = _json.loads(info_path.read_text(encoding="utf-8"))
+                    idx = int(scene_idx_str)
+                    entry = next((s for s in info["scenes"] if s["scene_index"] == idx), None)
+                    if entry is None:
+                        return gr.update(value=None)
+                    video_path = RUNS_DIR / entry["scene_dir"] / "rendered_video.mp4"
+                    if video_path.exists():
+                        return gr.update(value=str(video_path))
+                except Exception:
+                    pass
+                return gr.update(value=None)
+
+            proj_refresh_btn.click(fn=_refresh_projects, outputs=proj_dropdown)
+            proj_dropdown.change(
+                fn=_on_project_select,
+                inputs=proj_dropdown,
+                outputs=[proj_scene_list, proj_scene_select],
+            )
+            proj_scene_select.change(
+                fn=_on_scene_select_preview,
+                inputs=[proj_dropdown, proj_scene_select],
+                outputs=proj_scene_preview_video,
+            )
+
+            def _new_project_action(audience, carry):
+                msg, choice = _new_project_ui(audience, carry)
+                new_choices = _list_projects()
+                return msg, gr.update(choices=new_choices, value=choice if choice else None), "*—*"
+
+            proj_new_btn.click(
+                fn=_new_project_action,
+                inputs=[proj_audience, proj_carry_solver],
+                outputs=[proj_status, proj_dropdown, proj_scene_list],
+            )
+
+            def _fork_project_action(choice):
+                msg, new_choice = _fork_project_ui(choice)
+                new_choices = _list_projects()
+                return msg, gr.update(choices=new_choices, value=new_choice if new_choice else None)
+
+            proj_fork_btn.click(
+                fn=_fork_project_action,
+                inputs=proj_dropdown,
+                outputs=[proj_status, proj_dropdown],
+            )
+
+            proj_rerun_btn.click(
+                fn=_stream_rerun_scene,
+                inputs=[
+                    proj_dropdown, proj_scene_select, proj_rerun_step,
+                    rr_nudge1, rr_nudge2, rr_nudge3, rr_nudge4,
+                    rr_force_fix,
+                ],
+                outputs=[proj_logs, proj_video, proj_scene_list, proj_scene_select],
+            )
+
+            def _remove_scene_action(project_choice, scene_idx_str):
+                msg, md = _remove_scene_ui(project_choice, scene_idx_str)
+                choices = _get_scene_choices(project_choice)
+                return msg, md, gr.update(choices=choices, value=choices[0] if choices else None)
+
+            proj_remove_btn.click(
+                fn=_remove_scene_action,
+                inputs=[proj_dropdown, proj_scene_select],
+                outputs=[proj_status, proj_scene_list, proj_scene_select],
+            )
+
+            import_refresh_btn.click(
+                fn=lambda: gr.update(choices=_list_importable_sources()),
+                outputs=import_source,
+            )
+
+            def _import_scene_action(project_choice, source_choice, query_override):
+                msg, md = _import_scene_ui(project_choice, source_choice, query_override)
+                choices = _get_scene_choices(project_choice)
+                return msg, md, gr.update(choices=choices, value=choices[-1] if choices else None)
+
+            import_btn.click(
+                fn=_import_scene_action,
+                inputs=[proj_dropdown, import_source, import_query_override],
+                outputs=[proj_status, proj_scene_list, proj_scene_select],
+            )
+
+            run_scene_btn.click(
+                fn=_stream_project_scene,
+                inputs=[
+                    proj_dropdown, scene_query_input, gen_from_step,
+                    proj_nudge1, proj_nudge2, proj_nudge3, proj_nudge4,
+                ],
+                outputs=[proj_logs, proj_video, proj_scene_list, proj_scene_select],
+            )
+
+            def _stitch_action(project_choice):
+                msg, video_update = _stitch_videos_ui(project_choice)
+                return msg, video_update
+
+            stitch_btn.click(
+                fn=_stitch_action,
+                inputs=proj_dropdown,
+                outputs=[stitch_status, stitched_video],
             )
 
 

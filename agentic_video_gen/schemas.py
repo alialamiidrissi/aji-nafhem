@@ -99,3 +99,10 @@ class ManimPatch(BaseModel):
         )
     )
     explanation: str = Field(description="Brief explanation of what was fixed and why.")
+
+
+class SceneContext(BaseModel):
+    scene_index: int
+    query: str
+    script: "ScriptSegments"
+    solver_result: Optional["SolvedSteps"] = None  # only if carry_solver_context=True

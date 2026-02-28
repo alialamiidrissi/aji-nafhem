@@ -19,6 +19,7 @@ from agentic_video_gen.schemas import (
 from agentic_video_gen.agents import (
     get_solver_agent,
     get_script_agent,
+    get_script_review_agent,
     get_svg_agent,
     get_manim_agent,
     get_manim_fix_agent,
@@ -122,12 +123,32 @@ def _detect_completed_steps(run_dir: Path) -> list[int]:
     return [s for s, (fname, _) in _CHECKPOINTS.items() if (run_dir / fname).exists()]
 
 
+def _scene_context_block(previous_scenes_context: list) -> str:
+    """Format previous scene contexts into a prompt block."""
+    if not previous_scenes_context:
+        return ""
+    lines = ["\n\n[PREVIOUS SCENES CONTEXT — this is part of a multi-scene series]"]
+    for ctx in previous_scenes_context:
+        lines.append(f"\nScene {ctx.scene_index} — Query: {ctx.query}")
+        lines.append(
+            f"  Script (already recorded, do NOT repeat these segments):\n  {ctx.script.model_dump_json(indent=2)}"
+        )
+        if ctx.solver_result:
+            lines.append(
+                f"  Solution covered:\n  {ctx.solver_result.model_dump_json(indent=2)}"
+            )
+    lines.append("\n[END PREVIOUS SCENES CONTEXT]")
+    return "\n".join(lines)
+
+
 def run_pipeline(
     query: str,
     audience_level: str = DEFAULT_AUDIENCE,
     run_id: str | None = None,
     from_step: int = 1,
     nudges: dict[int, str] | None = None,
+    previous_scenes_context: list | None = None,
+    force_fix_prompt: str | None = None,
 ):
     """
     Runs the full educational video generation pipeline.
@@ -145,6 +166,13 @@ def run_pipeline(
         nudges:         Optional per-step extra instructions, keyed by step
                         number (1–4). Each nudge is appended only to that
                         step's prompt. E.g. {3: "use warmer colours", 4: "..."}
+        previous_scenes_context: Optional list of SceneContext objects from
+                        earlier scenes in a multi-scene project. Injected into
+                        steps 1, 2, and 4 prompts for narrative continuity.
+        force_fix_prompt: If set, the fix agent is called once at the start of
+                        step 5 with this visual-issue description (no compilation
+                        error required). Use this to correct layout or overlap
+                        problems spotted in the rendered video.
     """
     if run_id is None:
         run_id = str(uuid.uuid4())
@@ -168,6 +196,8 @@ def run_pipeline(
     # Write run metadata as JSON so multi-line queries are handled correctly
     with open(run_dir / "run_info.json", "w", encoding="utf-8") as f:
         json.dump({"run_id": run_id, "query": query, "audience": audience_level}, f, ensure_ascii=False, indent=2)
+    _ctx_block = _scene_context_block(previous_scenes_context or [])
+
     def _nudge(step: int) -> str:
         """Return the nudge suffix for the given step, or empty string."""
         text = (nudges or {}).get(step, "").strip()
@@ -179,7 +209,7 @@ def run_pipeline(
     if from_step <= 1:
         print("\n[Step 1] Solving / Analyzing the topic...")
         solver_agent = get_solver_agent()
-        _prompt1 = f"Audience Level: {audience_level}\nQuery: {query}" + _nudge(1)
+        _prompt1 = f"Audience Level: {audience_level}\nQuery: {query}" + _ctx_block + _nudge(1)
         solver_result = solver_agent.run_sync(_prompt1)
         solved_steps: SolvedSteps = solver_result.output
         _log_model_call(run_dir, 1, _prompt1, solver_result)
@@ -202,10 +232,22 @@ def run_pipeline(
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
             f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}"
-        ) + _nudge(2)
+        ) + _ctx_block + _nudge(2)
         script_result = script_agent.run_sync(_prompt2)
         script: ScriptSegments = script_result.output
         _log_model_call(run_dir, 2, _prompt2, script_result)
+
+        print("\n[Step 2 — review] Checking script/visual coherence...")
+        review_agent = get_script_review_agent()
+        _prompt2_review = (
+            f"Original Query: {query}\n\n"
+            f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}\n\n"
+            f"Draft Script:\n{script.model_dump_json(indent=2)}"
+        )
+        review_result = review_agent.run_sync(_prompt2_review)
+        script = review_result.output
+        _log_model_call(run_dir, "2_review", _prompt2_review, review_result)
+
         _save_checkpoint(run_dir, 2, script)
         generate_sounds_from_api(script.segments, audios_dir)
     else:
@@ -270,7 +312,7 @@ def run_pipeline(
             f"Available SVG Assets (load with self.get_svg(name)):\n"
             f"{asset_metadata_list}\n\n"
             f"Run directory (pass as run_dir to super().__init__ or handle via env): {run_dir}"
-        ) + _nudge(4)
+        ) + _ctx_block + _nudge(4)
         manim_result = manim_agent.run_sync(_prompt4)
         manim_code: ManimCode = manim_result.output
         _log_model_call(run_dir, 4, _prompt4, manim_result)
@@ -300,6 +342,31 @@ def run_pipeline(
         manim_bin = "/Users/aalamiid/miniconda3/envs/audio_tts/bin/manim"
         max_retries = 3
         run_env = {**os.environ, "MANIM_RUN_DIR": str(run_dir.resolve())}
+
+        # Force-fix pass: apply user-described visual corrections before compilation
+        if force_fix_prompt and force_fix_prompt.strip():
+            print(f"\n  [force-fix] Applying visual fix: {force_fix_prompt[:80]}...")
+            current_code = out_file.read_text(encoding="utf-8")
+            _fix_prompt = (
+                f"The following Manim Python file has VISUAL ISSUES reported by the user "
+                f"(the code compiles and runs, but the animation looks wrong).\n\n"
+                f"--- VISUAL ISSUE DESCRIPTION ---\n{force_fix_prompt.strip()}\n\n"
+                f"--- CURRENT SOURCE ---\n{current_code}"
+            )
+            fix_result = get_manim_fix_agent().run_sync(_fix_prompt)
+            _log_model_call(run_dir, "manim_fix", _fix_prompt, fix_result)
+            patch = fix_result.output
+            print(f"  Force-fix explanation: {patch.explanation}")
+            patched_code = current_code
+            applied = 0
+            for change in patch.changes:
+                if change.old_code in patched_code:
+                    patched_code = patched_code.replace(change.old_code, change.new_code, 1)
+                    applied += 1
+                else:
+                    print(f"  ⚠️  Could not find snippet to patch:\n{change.old_code[:120]}...")
+            print(f"  Applied {applied}/{len(patch.changes)} force-fix patch(es).")
+            out_file.write_text(patched_code, encoding="utf-8")
 
         for attempt in range(max_retries):
             print(f"  Attempt {attempt + 1}/{max_retries}...")
