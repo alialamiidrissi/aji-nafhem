@@ -155,6 +155,7 @@ def _run_pipeline_thread(
     nudges: dict | None = None,
     force_fix_prompt: str | None = None,
     force_fix_image: str | None = None,
+    model_provider: str = "google",
 ):
     """Target for the pipeline thread. Captures stdout into log_q."""
     orig_stdout = sys.stdout
@@ -172,6 +173,7 @@ def _run_pipeline_thread(
             nudges=nudges or None,
             force_fix_prompt=force_fix_prompt or None,
             force_fix_image=force_fix_image or None,
+            model_provider=model_provider,
         )
         result_box["run_dir"] = run_dir
     except Exception as exc:
@@ -232,6 +234,7 @@ def _stream_pipeline_and_render(
     nudges: dict | None = None,
     force_fix_prompt: str | None = None,
     force_fix_image: str | None = None,
+    model_provider: str = "google",
 ):
     """Generator: runs pipeline thread, then render thread, yielding (logs, video, done)."""
     log_q: queue.Queue = queue.Queue()
@@ -241,7 +244,7 @@ def _stream_pipeline_and_render(
     t = threading.Thread(
         target=_run_pipeline_thread,
         args=(query, audience, log_q, result_box),
-        kwargs={"run_id": run_id, "from_step": from_step, "nudges": nudges, "force_fix_prompt": force_fix_prompt, "force_fix_image": force_fix_image},
+        kwargs={"run_id": run_id, "from_step": from_step, "nudges": nudges, "force_fix_prompt": force_fix_prompt, "force_fix_image": force_fix_image, "model_provider": model_provider},
         daemon=True,
     )
     t.start()
@@ -300,12 +303,12 @@ def _stream_pipeline_and_render(
 # Gradio entry points
 # ---------------------------------------------------------------------------
 
-def generate_video(query: str, audience: str):
+def generate_video(query: str, audience: str, model_provider: str = "google"):
     """New run: start from step 1."""
     if not query.strip():
         yield "Please enter a topic.", gr.update(visible=False), gr.update(visible=False)
         return
-    yield from _stream_pipeline_and_render(query, audience)
+    yield from _stream_pipeline_and_render(query, audience, model_provider=model_provider)
 
 
 def _run_preview(run_choice: str) -> str:
@@ -351,7 +354,7 @@ def _run_preview(run_choice: str) -> str:
     )
 
 
-def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2: str, n3: str, n4: str, force_fix: str, force_fix_image: str | None = None):
+def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2: str, n3: str, n4: str, force_fix: str, force_fix_image: str | None = None, model_provider: str = "google"):
     """Resume an existing run from the selected step, with optional per-step nudges."""
     if not run_choice:
         yield "Please select a run.", gr.update(visible=False), gr.update(visible=False)
@@ -381,6 +384,7 @@ def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2:
         nudges=nudges,
         force_fix_prompt=force_fix.strip() or None,
         force_fix_image=force_fix_image or None,
+        model_provider=model_provider,
     )
 
 
@@ -633,25 +637,32 @@ def _import_scene_ui(
     project_choice: str,
     source_choice: str,
     query_override: str,
+    scene_index_override: float | None = None,
 ) -> tuple[str, str]:
     """Import an existing run/scene into the project as the next scene."""
     if not project_choice or not source_choice:
         return "Select a project and source.", ""
-    from agentic_video_gen.projects import import_scene, load_project_info
+    from agentic_video_gen.projects import import_scene, load_project_info, _shift_scenes_up
     project_id = _parse_project_choice(project_choice)
     project_dir = PROJECTS_DIR / project_id
     try:
         info = load_project_info(project_dir)
-        next_idx = max((s["scene_index"] for s in info["scenes"]), default=0) + 1
+        if scene_index_override is not None:
+            target_idx = int(scene_index_override)
+            existing = {s["scene_index"] for s in info["scenes"]}
+            if target_idx in existing:
+                _shift_scenes_up(project_dir, target_idx)
+        else:
+            target_idx = max((s["scene_index"] for s in info["scenes"]), default=0) + 1
         source_path = _parse_import_source(source_choice)
         import_scene(
             project_dir,
-            next_idx,
+            target_idx,
             source_path,
             query_override=query_override.strip() or None,
         )
         md = _render_project_markdown(project_dir)
-        return f"✅ Imported as scene {next_idx}.", md
+        return f"✅ Imported as scene {target_idx}.", md
     except Exception as e:
         return f"❌ Error: {e}", ""
 
@@ -667,6 +678,7 @@ def _run_project_scene_ui(
     force_fix_prompt: str | None = None,
     force_fix_image: str | None = None,
     insert_shift: bool = False,
+    model_provider: str = "google",
 ):
     """Thread target: run a project scene and stream logs.
 
@@ -701,6 +713,7 @@ def _run_project_scene_ui(
             force_fix_prompt=force_fix_prompt,
             force_fix_image=force_fix_image,
             insert_shift=insert_shift,
+            model_provider=model_provider,
         )
         result_box["run_dir"] = run_dir
         result_box["scene_index"] = scene_index
@@ -721,6 +734,7 @@ def _stream_project_scene(
     from_step_str: str,
     n1: str, n2: str, n3: str, n4: str,
     scene_index_override: float | None = None,
+    model_provider: str = "google",
 ):
     """Generator: run project scene pipeline then render, yield (logs, video, md, scene_choices)."""
     no_choices = gr.update()
@@ -738,7 +752,7 @@ def _stream_project_scene(
     t = threading.Thread(
         target=_run_project_scene_ui,
         args=(project_choice, scene_query, from_step_str, nudges, log_q, result_box),
-        kwargs={"scene_index": scene_index, "insert_shift": insert_shift},
+        kwargs={"scene_index": scene_index, "insert_shift": insert_shift, "model_provider": model_provider},
         daemon=True,
     )
     t.start()
@@ -803,6 +817,7 @@ def _stream_rerun_scene(
     rr_n1: str, rr_n2: str, rr_n3: str, rr_n4: str,
     rr_force_fix: str,
     rr_force_fix_image: str | None = None,
+    model_provider: str = "google",
 ):
     """Generator: re-run an existing native scene from the chosen step."""
     no_choices = gr.update()
@@ -838,7 +853,7 @@ def _stream_rerun_scene(
     t = threading.Thread(
         target=_run_project_scene_ui,
         args=(project_choice, query, from_step_str, nudges, log_q, result_box),
-        kwargs={"scene_index": idx, "force_fix_prompt": force_fix, "force_fix_image": rr_force_fix_image or None},
+        kwargs={"scene_index": idx, "force_fix_prompt": force_fix, "force_fix_image": rr_force_fix_image or None, "model_provider": model_provider},
         daemon=True,
     )
     t.start()
@@ -915,6 +930,14 @@ def _stitch_videos_ui(project_choice: str) -> tuple[str, object]:
 with gr.Blocks(title="Agentic Video Generator") as demo:
     gr.Markdown("# 🎬 Agentic Educational Video Generator")
 
+    with gr.Row():
+        model_provider_radio = gr.Dropdown(
+            choices=["google", "openai", "openrouter"],
+            value="google",
+            label="Model Provider",
+            info="google = Gemini Flash · openai = GPT-5 mini · openrouter = OpenRouter (OPENROUTER_API_KEY)",
+        )
+
     with gr.Tabs():
 
         # ── Tab 1: New Video ─────────────────────────────────────────────
@@ -943,17 +966,20 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 outputs=query_preview,
             )
 
-            generate_btn = gr.Button("Generate Video", variant="primary", size="lg")
+            with gr.Row():
+                generate_btn = gr.Button("Generate Video", variant="primary", size="lg")
+                new_stop_btn = gr.Button("⏹ Stop", variant="stop", size="lg")
 
             new_logs = gr.Textbox(label="Live Logs", lines=20, max_lines=40, interactive=False, autoscroll=True)
             new_video = gr.Video(label="Generated Video", visible=False)
             new_done = gr.Markdown("### ✅ Video ready!", visible=False)
 
-            generate_btn.click(
+            new_gen_event = generate_btn.click(
                 fn=generate_video,
-                inputs=[query_input, audience_input],
+                inputs=[query_input, audience_input, model_provider_radio],
                 outputs=[new_logs, new_video, new_done],
             )
+            new_stop_btn.click(fn=None, cancels=[new_gen_event])
 
         # ── Tab 2: Resume Run ────────────────────────────────────────────
         with gr.Tab("Resume Run"):
@@ -1016,7 +1042,9 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 sources=["upload", "clipboard"],
             )
 
-            resume_btn = gr.Button("Resume from Step", variant="primary", size="lg")
+            with gr.Row():
+                resume_btn = gr.Button("Resume from Step", variant="primary", size="lg")
+                resume_stop_btn = gr.Button("⏹ Stop", variant="stop", size="lg")
 
             resume_logs = gr.Textbox(label="Live Logs", lines=20, max_lines=40, interactive=False, autoscroll=True)
             resume_video_out = gr.Video(label="Generated Video", visible=False)
@@ -1029,11 +1057,12 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 outputs=run_dropdown,
             )
 
-            resume_btn.click(
+            resume_event = resume_btn.click(
                 fn=resume_video,
-                inputs=[run_dropdown, step_radio, copy_run_checkbox, nudge1, nudge2, nudge3, nudge4, force_fix_input, force_fix_image_input],
+                inputs=[run_dropdown, step_radio, copy_run_checkbox, nudge1, nudge2, nudge3, nudge4, force_fix_input, force_fix_image_input, model_provider_radio],
                 outputs=[resume_logs, resume_video_out, resume_done],
             )
+            resume_stop_btn.click(fn=None, cancels=[resume_event])
 
         # ── Tab 3: Multi-Scene Project ───────────────────────────────────
         with gr.Tab("Multi-Scene Project"):
@@ -1100,6 +1129,7 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                     scale=3,
                 )
                 proj_rerun_btn = gr.Button("▶ Re-run Scene", variant="primary", scale=1)
+                proj_rerun_stop_btn = gr.Button("⏹ Stop", variant="stop", scale=1)
 
             rr_force_fix = gr.Textbox(
                 label="Visual fix description (force-fix at step 5)",
@@ -1154,7 +1184,9 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                     proj_nudge2 = gr.Textbox(label="Step 2 — Script", lines=2)
                     proj_nudge3 = gr.Textbox(label="Step 3 — SVGs", lines=2)
                     proj_nudge4 = gr.Textbox(label="Step 4 — Manim", lines=2)
+            with gr.Row():
                 run_scene_btn = gr.Button("▶ Run Scene", variant="primary")
+                run_scene_stop_btn = gr.Button("⏹ Stop", variant="stop")
 
             with gr.Column(visible=False) as import_scene_col:
                 import_source = gr.Dropdown(
@@ -1166,6 +1198,13 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 import_query_override = gr.Textbox(
                     label="Query label override (optional)",
                     placeholder="Leave blank to use original query",
+                )
+                import_scene_index_input = gr.Number(
+                    label="Scene index (leave blank for next)",
+                    value=None,
+                    precision=0,
+                    minimum=1,
+                    interactive=True,
                 )
                 import_btn = gr.Button("Import Scene", variant="primary")
 
@@ -1204,11 +1243,26 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
 
             def _on_project_select(choice):
                 if not choice:
-                    return "*Select a project.*", gr.update(choices=[], value=None)
+                    return "*Select a project.*", gr.update(choices=[], value=None), False
                 pid = _parse_project_choice(choice)
-                md = _render_project_markdown(PROJECTS_DIR / pid)
+                project_dir = PROJECTS_DIR / pid
+                md = _render_project_markdown(project_dir)
                 choices = _get_scene_choices(choice)
-                return md, gr.update(choices=choices, value=choices[0] if choices else None)
+                info_path = project_dir / "project_info.json"
+                carry = _json.loads(info_path.read_text(encoding="utf-8")).get("carry_solver_context", False) if info_path.exists() else False
+                return md, gr.update(choices=choices, value=choices[0] if choices else None), carry
+
+            def _on_carry_solver_change(choice, carry):
+                if not choice:
+                    return gr.update()
+                pid = _parse_project_choice(choice)
+                info_path = PROJECTS_DIR / pid / "project_info.json"
+                if not info_path.exists():
+                    return gr.update()
+                info = _json.loads(info_path.read_text(encoding="utf-8"))
+                info["carry_solver_context"] = carry
+                info_path.write_text(_json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+                return _render_project_markdown(PROJECTS_DIR / pid)
 
             def _on_scene_select_preview(project_choice, scene_idx_str):
                 """Load the rendered_video.mp4 for the selected scene into the preview player."""
@@ -1233,7 +1287,12 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
             proj_dropdown.change(
                 fn=_on_project_select,
                 inputs=proj_dropdown,
-                outputs=[proj_scene_list, proj_scene_select],
+                outputs=[proj_scene_list, proj_scene_select, proj_carry_solver],
+            )
+            proj_carry_solver.change(
+                fn=_on_carry_solver_change,
+                inputs=[proj_dropdown, proj_carry_solver],
+                outputs=proj_scene_list,
             )
             proj_scene_select.change(
                 fn=_on_scene_select_preview,
@@ -1263,15 +1322,16 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 outputs=[proj_status, proj_dropdown],
             )
 
-            proj_rerun_btn.click(
+            proj_rerun_event = proj_rerun_btn.click(
                 fn=_stream_rerun_scene,
                 inputs=[
                     proj_dropdown, proj_scene_select, proj_rerun_step,
                     rr_nudge1, rr_nudge2, rr_nudge3, rr_nudge4,
-                    rr_force_fix, rr_force_fix_image,
+                    rr_force_fix, rr_force_fix_image, model_provider_radio,
                 ],
                 outputs=[proj_logs, proj_video, proj_scene_list, proj_scene_select],
             )
+            proj_rerun_stop_btn.click(fn=None, cancels=[proj_rerun_event])
 
             def _remove_scene_action(project_choice, scene_idx_str):
                 msg, md = _remove_scene_ui(project_choice, scene_idx_str)
@@ -1289,26 +1349,27 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 outputs=import_source,
             )
 
-            def _import_scene_action(project_choice, source_choice, query_override):
-                msg, md = _import_scene_ui(project_choice, source_choice, query_override)
+            def _import_scene_action(project_choice, source_choice, query_override, scene_index_override):
+                msg, md = _import_scene_ui(project_choice, source_choice, query_override, scene_index_override)
                 choices = _get_scene_choices(project_choice)
                 return msg, md, gr.update(choices=choices, value=choices[-1] if choices else None)
 
             import_btn.click(
                 fn=_import_scene_action,
-                inputs=[proj_dropdown, import_source, import_query_override],
+                inputs=[proj_dropdown, import_source, import_query_override, import_scene_index_input],
                 outputs=[proj_status, proj_scene_list, proj_scene_select],
             )
 
-            run_scene_btn.click(
+            run_scene_event = run_scene_btn.click(
                 fn=_stream_project_scene,
                 inputs=[
                     proj_dropdown, scene_query_input, gen_from_step,
                     proj_nudge1, proj_nudge2, proj_nudge3, proj_nudge4,
-                    scene_index_input,
+                    scene_index_input, model_provider_radio,
                 ],
                 outputs=[proj_logs, proj_video, proj_scene_list, proj_scene_select],
             )
+            run_scene_stop_btn.click(fn=None, cancels=[run_scene_event])
 
             def _stitch_action(project_choice):
                 msg, video_update = _stitch_videos_ui(project_choice)

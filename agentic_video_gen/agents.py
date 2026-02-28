@@ -3,6 +3,10 @@ from dotenv import load_dotenv
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.models.openrouter import OpenRouterModel
+from pydantic_ai.providers.openrouter import OpenRouterProvider
 from agentic_video_gen.schemas import (
     SolvedSteps,
     ScriptSegments,
@@ -48,19 +52,57 @@ client = httpx.AsyncClient(transport=_RetryTransport(), timeout=120.0)
 # Load environment variables
 load_dotenv(os.path.join(os.getcwd(), ".env"))
 
-# Model names
-_PRO = "gemini-3-flash-preview"
-_FLASH = "gemini-3-flash-preview"
+# Model names — Google
+_GOOGLE_FLASH = "gemini-3-flash-preview"
+_GOOGLE_PRO = "gemini-3-flash-preview"
+
+# Model names — OpenAI
+_OPENAI_FLASH = "gpt-5-mini"
+_OPENAI_PRO = "gpt-5.2"
+
+# Model names — OpenRouter (override via env vars OPENROUTER_FLASH_MODEL / OPENROUTER_PRO_MODEL)
+_OPENROUTER_FLASH = os.environ.get("OPENROUTER_FLASH_MODEL", "google/gemini-3-flash-preview")
+_OPENROUTER_PRO = os.environ.get("OPENROUTER_PRO_MODEL", "google/gemini-3-flash-preview")
+
+_MODEL_MAP = {
+    "google": {"flash": _GOOGLE_FLASH, "pro": _GOOGLE_PRO},
+    "openai": {"flash": _OPENAI_FLASH, "pro": _OPENAI_PRO},
+    "openrouter": {"flash": _OPENROUTER_FLASH, "pro": _OPENROUTER_PRO},
+}
 
 
-def _make_agent(model_name: str, output_type, system_prompt: str) -> Agent:
+def _active_provider(provider: str) -> str:
+    """Return 'openrouter' if OPENROUTER_API_KEY is set, otherwise the requested provider."""
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return "openrouter"
+    return provider
+
+
+def _make_agent(model_name: str, output_type, system_prompt: str, provider: str = "google") -> Agent:
     """
-    Defers GoogleModel creation to call time so GEMINI_API_KEY is
-    already set in the environment when the provider initializes.
+    Create an agent for the given provider.  provider is 'google', 'openai', or 'openrouter'.
+    If OPENROUTER_API_KEY is set, all calls are routed through OpenRouter regardless of provider.
+    Defers model creation to call time so API keys are already loaded.
     """
-    provider = GoogleProvider(http_client=client)
+    provider = _active_provider(provider)
+
+    if provider == "openrouter":
+        return Agent(
+            model=OpenRouterModel(model_name, provider=OpenRouterProvider()),
+            output_type=output_type,
+            system_prompt=system_prompt,
+        )
+    if provider == "openai":
+        openai_provider = OpenAIProvider()
+        return Agent(
+            model=OpenAIChatModel(model_name, provider=openai_provider),
+            output_type=output_type,
+            system_prompt=system_prompt,
+        )
+    # default: google
+    google_provider = GoogleProvider(http_client=client)
     return Agent(
-        model=GoogleModel(model_name, provider=provider),
+        model=GoogleModel(model_name, provider=google_provider),
         output_type=output_type,
         system_prompt=system_prompt,
     )
@@ -120,12 +162,17 @@ _SCRIPT_PROMPT = (
 
     "STRUCTURE REQUIREMENTS:\n"
     "- Divide the script into segments.\n"
-    "- Each segment must express ONE complete idea only.\n"
-    "- Each segment should correspond to approximately five to ten seconds of spoken audio.\n"
+    "- Each segment must express ONE complete idea only — a single short phrase or sentence, NOT two clauses.\n"
+    "- Each segment should correspond to approximately three to six seconds of spoken audio. "
+    "Shorter is better: a deliberate, unhurried pace is more educational than a fast one.\n"
     "- Avoid single-word segments.\n"
-    "- Avoid long multi-sentence paragraphs.\n"
-    "- For each segment, include a 'visual_action' field that precisely describes what the viewer sees "
-    "at the exact moment that segment is spoken.\n"
+    "- Avoid long multi-sentence paragraphs in a single segment.\n"
+    "- Between major concept shifts, include a brief transitional segment (e.g., a short summary line, "
+    "a rhetorical question ...) that gives the viewer cognitive "
+    "breathing room before the next idea starts.\n"
+    "- For each segment, include a 'visual_action' field that precisely describes ONE visual action "
+    "the viewer sees at the exact moment that segment is spoken. Keep the visual_action simple and atomic "
+    "— one thing appearing, one formula revealed, one highlight — not a sequence of actions.\n"
     "- Visuals must tightly synchronize with the spoken content.\n\n"
 
     "The final result must be optimized for spoken clarity, pacing, and audiovisual synchronization. "
@@ -230,7 +277,18 @@ _MANIM_PROMPT = (
     "   - True frame: x ∈ [-7.11, 7.11], y ∈ [-4.0, 4.0]. Safe content zone with 0.5-unit margin: "
     "x ∈ [-6.5, 6.5], y ∈ [-3.5, 3.5].\n"
     "   - When using `.shift()`, keep x-shifts within ±5.0 and y-shifts within ±3.0 from centre.\n"
-    "11. Output must be completely valid, executable Python. Do NOT add markdown code fences."
+    "11. Pacing — CRITICAL for viewer comprehension:\n"
+    "   - Use `run_time=1.5` or `run_time=2.0` for all major animations (Write, FadeIn, DrawBorderThenFill, "
+    "ReplacementTransform, Transform). The default `run_time=1` is too fast for educational content.\n"
+    "   - Insert `self.wait(0.5)` between sequential `self.play()` calls within the same speech block so "
+    "each visual change registers before the next appears.\n"
+    "   - The context manager yields the audio duration as a variable: "
+    "`with self.speech('id') as duration:`. Use this only as a reference — do NOT manually call "
+    "`self.wait(duration)`; the base class handles the remainder automatically.\n"
+    "   - Plan each speech block so that animations occupy roughly the first 60-70% of the audio duration, "
+    "leaving the final portion as static display time for the viewer to absorb the result. "
+    "Do NOT cram more than 2-3 `self.play()` calls into a single speech block.\n"
+    "12. Output must be completely valid, executable Python. Do NOT add markdown code fences."
 )
 
 
@@ -249,15 +307,20 @@ _MANIM_FIX_PROMPT = (
 )
 
 
-def get_manim_fix_agent() -> Agent:
-    return _make_agent(_FLASH, ManimPatch, _MANIM_FIX_PROMPT)
+def _model(provider: str, tier: str) -> str:
+    """Resolve model name using the active provider (openrouter overrides if key is set)."""
+    return _MODEL_MAP[_active_provider(provider)][tier]
 
 
-def get_solver_agent() -> Agent:
-    return _make_agent(_PRO, SolvedSteps, _SOLVER_PROMPT)
+def get_manim_fix_agent(provider: str = "google") -> Agent:
+    return _make_agent(_model(provider, "flash"), ManimPatch, _MANIM_FIX_PROMPT, provider)
 
-def get_script_agent() -> Agent:
-    return _make_agent(_FLASH, ScriptSegments, _SCRIPT_PROMPT)
+
+def get_solver_agent(provider: str = "google") -> Agent:
+    return _make_agent(_model(provider, "pro"), SolvedSteps, _SOLVER_PROMPT, provider)
+
+def get_script_agent(provider: str = "google") -> Agent:
+    return _make_agent(_model(provider, "flash"), ScriptSegments, _SCRIPT_PROMPT, provider)
 
 
 _SCRIPT_REVIEW_PROMPT = (
@@ -281,14 +344,14 @@ _SCRIPT_REVIEW_PROMPT = (
     "Correction rules:\n"
     "  - Rewrite the 'script' field (Darija) so it narrates exactly what the visual_action shows.\n"
     "  - You may also fix the 'visual_action' if it is clearly wrong and the script is correct — "
-    "but prefer fixing the script.\n"
+    "but prefer fixing the script. The visual action field doesn't have to be in arabic, you could keep it its original language as this is not spoken out with TTS \n"
     "  - Do NOT change segment ids or reorder segments.\n"
     "  - Do NOT merge or split segments.\n"
     "  - Preserve all original script rules: Arabic letters only, heavy tashkeel, no Latin/symbols, "
     "no mathematical notation — rewrite all formulas in Arabic words.\n"
     "  - If a segment is already coherent, copy it unchanged.\n\n"
 
-    "TTS QUALITY PASS — apply to every segment (even unchanged ones):\n"
+    "TTS QUALITY PASS ('script' field) — apply to every segment (even unchanged ones):\n"
     "  - Add full, consistent tashkeel (diacritics) on every word.\n"
     "  - Replace phonetically complex or ambiguous Darija words with simpler equivalents "
     "that a TTS engine will pronounce naturally (e.g. avoid rare consonant clusters, "
@@ -296,15 +359,23 @@ _SCRIPT_REVIEW_PROMPT = (
     "  - The result must still sound like natural spoken Darija and remain pedagogically clear — "
     "do NOT sacrifice meaning for simplicity.\n\n"
 
+    "PACING CHECK — apply to every segment:\n"
+    "  - A segment is TOO LONG if its 'script' text would take more than ~7 seconds to say at a natural pace "
+    "(roughly more than 15-18 Arabic words). Split such segments into two shorter ones.\n"
+    "  - A segment is TOO DENSE if its 'visual_action' describes more than one distinct visual event "
+    "(e.g., 'show X, then highlight Y, then replace with Z'). Split into atomic segments — one visual action each.\n"
+    "  - When splitting, assign sequential ids (e.g., if splitting segment id=5, produce ids 5a and 5b).\n"
+    "  - Between major concept transitions, insert a brief transitional segment if none exists.\n\n"
+
     "Return the full corrected ScriptSegments (all segments, even unchanged ones)."
 )
 
 
-def get_script_review_agent() -> Agent:
-    return _make_agent(_FLASH, ScriptSegments, _SCRIPT_REVIEW_PROMPT)
+def get_script_review_agent(provider: str = "google") -> Agent:
+    return _make_agent(_model(provider, "flash"), ScriptSegments, _SCRIPT_REVIEW_PROMPT, provider)
 
-def get_svg_agent() -> Agent:
-    return _make_agent(_FLASH, VisualAssets, _SVG_PROMPT)
+def get_svg_agent(provider: str = "google") -> Agent:
+    return _make_agent(_model(provider, "flash"), VisualAssets, _SVG_PROMPT, provider)
 
-def get_manim_agent() -> Agent:
-    return _make_agent(_FLASH, ManimCode, _MANIM_PROMPT)
+def get_manim_agent(provider: str = "google") -> Agent:
+    return _make_agent(_model(provider, "flash"), ManimCode, _MANIM_PROMPT, provider)

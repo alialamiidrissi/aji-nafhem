@@ -61,7 +61,7 @@ class BaseEducationalScene(Scene):
             elapsed = self.renderer.time - start_time
             remaining = duration - elapsed
             if remaining > 0:
-                self.wait(remaining)
+                self.wait(remaining+0.2)
 
     def fit_to_frame(self, mob, margin=0.7):
         """

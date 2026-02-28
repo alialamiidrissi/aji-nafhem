@@ -140,6 +140,7 @@ def run_pipeline(
     previous_scenes_context: list | None = None,
     force_fix_prompt: str | None = None,
     force_fix_image: str | None = None,
+    model_provider: str = "google",
 ):
     """
     Runs the full educational video generation pipeline.
@@ -186,7 +187,8 @@ def run_pipeline(
 
     # Write run metadata as JSON so multi-line queries are handled correctly
     with open(run_dir / "run_info.json", "w", encoding="utf-8") as f:
-        json.dump({"run_id": run_id, "query": query, "audience": audience_level}, f, ensure_ascii=False, indent=2)
+        json.dump({"run_id": run_id, "query": query, "audience": audience_level, "model_provider": model_provider}, f, ensure_ascii=False, indent=2)
+    print(f"Model provider: {model_provider}")
     _ctx_block = _scene_context_block(previous_scenes_context or [])
 
     def _nudge(step: int) -> str:
@@ -199,7 +201,7 @@ def run_pipeline(
     # --------------------------------------------------
     if from_step <= 1:
         print("\n[Step 1] Solving / Analyzing the topic...")
-        solver_agent = get_solver_agent()
+        solver_agent = get_solver_agent(model_provider)
         _prompt1 = f"Audience Level: {audience_level}\nQuery: {query}" + _ctx_block + _nudge(1)
         solver_result = solver_agent.run_sync(_prompt1)
         solved_steps: SolvedSteps = solver_result.output
@@ -218,7 +220,7 @@ def run_pipeline(
     # --------------------------------------------------
     if from_step <= 2:
         print("\n[Step 2] Generating voiceover script...")
-        script_agent = get_script_agent()
+        script_agent = get_script_agent(model_provider)
         _prompt2 = (
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
@@ -229,7 +231,7 @@ def run_pipeline(
         _log_model_call(run_dir, 2, _prompt2, script_result)
 
         print("\n[Step 2 — review] Checking script/visual coherence...")
-        review_agent = get_script_review_agent()
+        review_agent = get_script_review_agent(model_provider)
         _prompt2_review = (
             f"Original Query: {query}\n\n"
             f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}\n\n"
@@ -254,7 +256,7 @@ def run_pipeline(
     # --------------------------------------------------
     if from_step <= 3:
         print("\n[Step 3] Generating SVG assets...")
-        svg_agent = get_svg_agent()
+        svg_agent = get_svg_agent(model_provider)
         _prompt3 = (
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
@@ -293,7 +295,7 @@ def run_pipeline(
 
     if from_step <= 4:
         print("\n[Step 4] Generating Manim scene code...")
-        manim_agent = get_manim_agent()
+        manim_agent = get_manim_agent(model_provider)
         _prompt4 = (
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
@@ -352,7 +354,7 @@ def run_pipeline(
                 print(f"  [force-fix] Attaching screenshot ({len(image_bytes)} bytes, {_mime})")
             else:
                 _fix_prompt = _fix_text
-            fix_result = get_manim_fix_agent().run_sync(_fix_prompt)
+            fix_result = get_manim_fix_agent(model_provider).run_sync(_fix_prompt)
             _log_model_call(run_dir, "manim_fix", _fix_prompt, fix_result)
             patch = fix_result.output
             print(f"  Force-fix explanation: {patch.explanation}")
@@ -370,7 +372,7 @@ def run_pipeline(
         for attempt in range(max_retries):
             print(f"  Attempt {attempt + 1}/{max_retries}...")
             compilation = subprocess.run(
-                [manim_bin, "-ql", "--dry_run", str(out_file), "GeneratedEducationalScene"],
+                [manim_bin, "-ql", "--dry_run", "--verbosity", "WARNING", str(out_file), "GeneratedEducationalScene"],
                 capture_output=True,
                 text=True,
                 env=run_env,
@@ -390,7 +392,7 @@ def run_pipeline(
                     f"--- COMPILATION ERROR ---\n{error_trace}\n\n"
                     f"--- CURRENT SOURCE ---\n{current_code}"
                 )
-                fix_result = get_manim_fix_agent().run_sync(_fix_prompt)
+                fix_result = get_manim_fix_agent(model_provider).run_sync(_fix_prompt)
                 _log_model_call(run_dir, "manim_fix", _fix_prompt, fix_result)
 
                 patch = fix_result.output
