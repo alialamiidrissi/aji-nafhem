@@ -314,6 +314,7 @@ def run_project_scene(
     force_fix_image: str | None = None,
     insert_shift: bool = False,
     model_provider: str = "google",
+    tts_provider: str = "local",
 ) -> Path:
     """Run (or resume) a native scene within a project.
 
@@ -351,6 +352,7 @@ def run_project_scene(
         force_fix_prompt=force_fix_prompt,
         force_fix_image=force_fix_image,
         model_provider=model_provider,
+        tts_provider=tts_provider,
     )
 
     print(f"[project] Scene {scene_index} complete → {run_dir}")

@@ -156,6 +156,7 @@ def _run_pipeline_thread(
     force_fix_prompt: str | None = None,
     force_fix_image: str | None = None,
     model_provider: str = "google",
+    tts_provider: str = "local",
 ):
     """Target for the pipeline thread. Captures stdout into log_q."""
     orig_stdout = sys.stdout
@@ -174,6 +175,7 @@ def _run_pipeline_thread(
             force_fix_prompt=force_fix_prompt or None,
             force_fix_image=force_fix_image or None,
             model_provider=model_provider,
+            tts_provider=tts_provider,
         )
         result_box["run_dir"] = run_dir
     except Exception as exc:
@@ -235,6 +237,7 @@ def _stream_pipeline_and_render(
     force_fix_prompt: str | None = None,
     force_fix_image: str | None = None,
     model_provider: str = "google",
+    tts_provider: str = "local",
 ):
     """Generator: runs pipeline thread, then render thread, yielding (logs, video, done)."""
     log_q: queue.Queue = queue.Queue()
@@ -244,7 +247,7 @@ def _stream_pipeline_and_render(
     t = threading.Thread(
         target=_run_pipeline_thread,
         args=(query, audience, log_q, result_box),
-        kwargs={"run_id": run_id, "from_step": from_step, "nudges": nudges, "force_fix_prompt": force_fix_prompt, "force_fix_image": force_fix_image, "model_provider": model_provider},
+        kwargs={"run_id": run_id, "from_step": from_step, "nudges": nudges, "force_fix_prompt": force_fix_prompt, "force_fix_image": force_fix_image, "model_provider": model_provider, "tts_provider": tts_provider},
         daemon=True,
     )
     t.start()
@@ -303,12 +306,12 @@ def _stream_pipeline_and_render(
 # Gradio entry points
 # ---------------------------------------------------------------------------
 
-def generate_video(query: str, audience: str, model_provider: str = "google"):
+def generate_video(query: str, audience: str, model_provider: str = "google", tts_provider: str = "local"):
     """New run: start from step 1."""
     if not query.strip():
         yield "Please enter a topic.", gr.update(visible=False), gr.update(visible=False)
         return
-    yield from _stream_pipeline_and_render(query, audience, model_provider=model_provider)
+    yield from _stream_pipeline_and_render(query, audience, model_provider=model_provider, tts_provider=tts_provider)
 
 
 def _run_preview(run_choice: str) -> str:
@@ -354,7 +357,7 @@ def _run_preview(run_choice: str) -> str:
     )
 
 
-def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2: str, n3: str, n4: str, force_fix: str, force_fix_image: str | None = None, model_provider: str = "google"):
+def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2: str, n3: str, n4: str, force_fix: str, force_fix_image: str | None = None, model_provider: str = "google", tts_provider: str = "local"):
     """Resume an existing run from the selected step, with optional per-step nudges."""
     if not run_choice:
         yield "Please select a run.", gr.update(visible=False), gr.update(visible=False)
@@ -385,6 +388,7 @@ def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2:
         force_fix_prompt=force_fix.strip() or None,
         force_fix_image=force_fix_image or None,
         model_provider=model_provider,
+        tts_provider=tts_provider,
     )
 
 
@@ -679,6 +683,7 @@ def _run_project_scene_ui(
     force_fix_image: str | None = None,
     insert_shift: bool = False,
     model_provider: str = "google",
+    tts_provider: str = "local",
 ):
     """Thread target: run a project scene and stream logs.
 
@@ -714,6 +719,7 @@ def _run_project_scene_ui(
             force_fix_image=force_fix_image,
             insert_shift=insert_shift,
             model_provider=model_provider,
+            tts_provider=tts_provider,
         )
         result_box["run_dir"] = run_dir
         result_box["scene_index"] = scene_index
@@ -735,6 +741,7 @@ def _stream_project_scene(
     n1: str, n2: str, n3: str, n4: str,
     scene_index_override: float | None = None,
     model_provider: str = "google",
+    tts_provider: str = "local",
 ):
     """Generator: run project scene pipeline then render, yield (logs, video, md, scene_choices)."""
     no_choices = gr.update()
@@ -752,7 +759,7 @@ def _stream_project_scene(
     t = threading.Thread(
         target=_run_project_scene_ui,
         args=(project_choice, scene_query, from_step_str, nudges, log_q, result_box),
-        kwargs={"scene_index": scene_index, "insert_shift": insert_shift, "model_provider": model_provider},
+        kwargs={"scene_index": scene_index, "insert_shift": insert_shift, "model_provider": model_provider, "tts_provider": tts_provider},
         daemon=True,
     )
     t.start()
@@ -818,6 +825,7 @@ def _stream_rerun_scene(
     rr_force_fix: str,
     rr_force_fix_image: str | None = None,
     model_provider: str = "google",
+    tts_provider: str = "local",
 ):
     """Generator: re-run an existing native scene from the chosen step."""
     no_choices = gr.update()
@@ -853,7 +861,7 @@ def _stream_rerun_scene(
     t = threading.Thread(
         target=_run_project_scene_ui,
         args=(project_choice, query, from_step_str, nudges, log_q, result_box),
-        kwargs={"scene_index": idx, "force_fix_prompt": force_fix, "force_fix_image": rr_force_fix_image or None, "model_provider": model_provider},
+        kwargs={"scene_index": idx, "force_fix_prompt": force_fix, "force_fix_image": rr_force_fix_image or None, "model_provider": model_provider, "tts_provider": tts_provider},
         daemon=True,
     )
     t.start()
@@ -937,6 +945,12 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
             label="Model Provider",
             info="google = Gemini Flash · openai = GPT-5 mini · openrouter = OpenRouter (OPENROUTER_API_KEY)",
         )
+        tts_provider_dropdown = gr.Dropdown(
+            choices=["local", "elevenlabs"],
+            value="local",
+            label="TTS Provider",
+            info="local = Coqui XTTS server (localhost:8000) · elevenlabs = ElevenLabs API (ELEVENLABS_API_KEY)",
+        )
 
     with gr.Tabs():
 
@@ -976,7 +990,7 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
 
             new_gen_event = generate_btn.click(
                 fn=generate_video,
-                inputs=[query_input, audience_input, model_provider_radio],
+                inputs=[query_input, audience_input, model_provider_radio, tts_provider_dropdown],
                 outputs=[new_logs, new_video, new_done],
             )
             new_stop_btn.click(fn=None, cancels=[new_gen_event])
@@ -1059,7 +1073,7 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
 
             resume_event = resume_btn.click(
                 fn=resume_video,
-                inputs=[run_dropdown, step_radio, copy_run_checkbox, nudge1, nudge2, nudge3, nudge4, force_fix_input, force_fix_image_input, model_provider_radio],
+                inputs=[run_dropdown, step_radio, copy_run_checkbox, nudge1, nudge2, nudge3, nudge4, force_fix_input, force_fix_image_input, model_provider_radio, tts_provider_dropdown],
                 outputs=[resume_logs, resume_video_out, resume_done],
             )
             resume_stop_btn.click(fn=None, cancels=[resume_event])
@@ -1327,7 +1341,7 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 inputs=[
                     proj_dropdown, proj_scene_select, proj_rerun_step,
                     rr_nudge1, rr_nudge2, rr_nudge3, rr_nudge4,
-                    rr_force_fix, rr_force_fix_image, model_provider_radio,
+                    rr_force_fix, rr_force_fix_image, model_provider_radio, tts_provider_dropdown,
                 ],
                 outputs=[proj_logs, proj_video, proj_scene_list, proj_scene_select],
             )
@@ -1365,7 +1379,7 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 inputs=[
                     proj_dropdown, scene_query_input, gen_from_step,
                     proj_nudge1, proj_nudge2, proj_nudge3, proj_nudge4,
-                    scene_index_input, model_provider_radio,
+                    scene_index_input, model_provider_radio, tts_provider_dropdown,
                 ],
                 outputs=[proj_logs, proj_video, proj_scene_list, proj_scene_select],
             )

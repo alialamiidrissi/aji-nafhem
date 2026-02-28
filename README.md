@@ -114,6 +114,11 @@ OPENROUTER_API_KEY=your_key_here
 # Optional: override the default OpenRouter models
 OPENROUTER_FLASH_MODEL=google/gemini-3-flash-preview   # default
 OPENROUTER_PRO_MODEL=google/gemini-3-flash-preview     # default
+
+# ElevenLabs TTS (optional — local Coqui XTTS is used by default)
+ELEVENLABS_API_KEY=your_key_here
+ELEVENLABS_VOICE_ID=cgSgspJ2msm6clMCkdW9   # default voice; override with any ElevenLabs voice ID
+ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # default model; supports Arabic/Darija
 ```
 
 #### Check API status
@@ -162,7 +167,7 @@ python gradio_app.py
 # Opens at http://localhost:7861
 ```
 
-**New Video tab** — enter a topic and audience level, pick a model provider, click Generate.
+**New Video tab** — enter a topic and audience level, pick a model provider and TTS provider, click Generate.
 
 **Resume Run tab** — pick an existing run, choose which step to restart from, optionally:
 - Check *Copy to new run* to fork instead of overwrite
@@ -175,9 +180,11 @@ python gradio_app.py
 - Re-run individual scenes from any step
 - Stitch all scenes into a single MP4
 
-#### Model Provider
+#### Model Provider & TTS Provider
 
-All three tabs share a **Model Provider** dropdown at the top:
+All three tabs share global **Model Provider** and **TTS Provider** dropdowns at the top.
+
+**Model Provider:**
 
 | Option | Backend |
 |--------|---------|
@@ -185,7 +192,16 @@ All three tabs share a **Model Provider** dropdown at the top:
 | `openai` | GPT-5 mini / GPT-5.2 |
 | `openrouter` | OpenRouter — routes to `google/gemini-3-flash-preview` by default |
 
-Setting `OPENROUTER_API_KEY` in `.env` will automatically route all calls through OpenRouter regardless of the UI selection.
+Setting `OPENROUTER_API_KEY` in `.env` will automatically route all LLM calls through OpenRouter regardless of the UI selection.
+
+**TTS Provider:**
+
+| Option | Backend |
+|--------|---------|
+| `local` | Coqui XTTS server at `localhost:8000` (default) |
+| `elevenlabs` | ElevenLabs API — requires `ELEVENLABS_API_KEY`; uses `eleven_multilingual_v2` for Darija |
+
+ElevenLabs returns MP3 which is automatically converted to WAV. Voice and model can be overridden via `ELEVENLABS_VOICE_ID` and `ELEVENLABS_MODEL_ID`.
 
 ### CLI
 

@@ -141,6 +141,7 @@ def run_pipeline(
     force_fix_prompt: str | None = None,
     force_fix_image: str | None = None,
     model_provider: str = "google",
+    tts_provider: str = "local",
 ):
     """
     Runs the full educational video generation pipeline.
@@ -242,7 +243,7 @@ def run_pipeline(
         _log_model_call(run_dir, "2_review", _prompt2_review, review_result)
 
         _save_checkpoint(run_dir, 2, script)
-        generate_sounds_from_api(script.segments, audios_dir)
+        generate_sounds_from_api(script.segments, audios_dir, tts_provider=tts_provider)
     else:
         print("\n[Step 2] Loading from checkpoint (skipped)...")
         script: ScriptSegments = _load_checkpoint(run_dir, 2)
