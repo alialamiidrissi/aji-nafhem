@@ -80,3 +80,22 @@ class ManimCode(BaseModel):
             "Must subclass BaseEducationalScene and be named exactly GeneratedEducationalScene."
         )
     )
+
+
+class CodeChange(BaseModel):
+    old_code: str = Field(
+        description="The exact verbatim code snippet to find and replace. Must match character-for-character."
+    )
+    new_code: str = Field(
+        description="The replacement code snippet."
+    )
+
+
+class ManimPatch(BaseModel):
+    changes: List[CodeChange] = Field(
+        description=(
+            "Ordered list of search-and-replace edits to apply to the existing Python file. "
+            "Each change must contain an exact verbatim snippet from the current file."
+        )
+    )
+    explanation: str = Field(description="Brief explanation of what was fixed and why.")

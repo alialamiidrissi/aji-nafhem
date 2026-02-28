@@ -29,8 +29,13 @@ class BaseEducationalScene(Scene):
         self.out_path = base / "audios"
 
     def setup_assets(self):
-        """Ensures the assets folder exists. SVGs are pre-written by the pipeline."""
+        """
+        Ensures the assets folder exists and emits a short silent buffer.
+        The buffer frames sit before any audio and prevent Manim's encoder
+        from clipping the very start of the first TTS segment.
+        """
         self.asset_path.mkdir(parents=True, exist_ok=True)
+        self.wait(0.5)
 
     @contextmanager
     def speech(self, audio_id):
@@ -57,6 +62,21 @@ class BaseEducationalScene(Scene):
             remaining = duration - elapsed
             if remaining > 0:
                 self.wait(remaining)
+
+    def fit_to_frame(self, mob, margin=0.7):
+        """
+        Scales a mobject down (never up) so that it fits within the visible
+        frame with the given margin on each side. Call this before adding any
+        Text, SVG, or VGroup to the scene to prevent objects from going
+        off-screen.
+        """
+        max_w = config.frame_width - margin * 2
+        max_h = config.frame_height - margin * 2
+        if mob.width > max_w:
+            mob.scale_to_fit_width(max_w)
+        if mob.height > max_h:
+            mob.scale_to_fit_height(max_h)
+        return mob
 
     def get_svg(self, name, **kwargs):
         """
