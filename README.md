@@ -48,23 +48,23 @@ Each step saves a JSON checkpoint so runs can be resumed or forked from any poin
 - **Resumable runs** — every step is checkpointed; restart from any step without re-running earlier ones
 - **Run forking** — resume a run as a copy, leaving the original untouched
 - **Per-step nudges** — inject extra instructions into any step's LLM prompt when resuming
-- **Gradio UI** — browser interface for generating new videos, managing projects, and re-running individual scenes
+- **Next.js UI** — modern browser interface for generating new videos, managing projects, and re-running individual scenes
 
 ---
 
 ## Project Structure
 
 ```
-nafham/
+aji-nafhem/
 ├── agentic_video_gen/
-│   ├── agents.py          # LLM agents for each pipeline step (Gemini / OpenAI / OpenRouter)
-│   ├── pipeline.py        # Orchestration logic + checkpoint management
-│   ├── base_scene.py      # BaseEducationalScene — Manim base class with helpers
-│   ├── schemas.py         # Pydantic models for all inter-step data
-│   ├── utils.py           # TTS API client + asset writing
-│   ├── projects.py        # Multi-scene project management
-│   ├── stitch.py          # ffmpeg-based video stitching
-│   └── runs/              # One folder per run (UUID), containing all artifacts
+│   ├── agents.py           # LLM agents for each pipeline step
+│   ├── pipeline.py         # Orchestration + checkpoint management
+│   ├── base_scene.py       # BaseEducationalScene — Manim base class
+│   ├── schemas.py          # Pydantic models for inter-step data
+│   ├── utils.py            # TTS API client + asset writing
+│   ├── projects.py         # Multi-scene project management
+│   ├── stitch.py           # ffmpeg-based video stitching
+│   └── runs/               # One folder per run (UUID)
 │       ├── <run-id>/
 │       │   ├── run_info.json
 │       │   ├── checkpoint_step1_solved.json
@@ -72,53 +72,65 @@ nafham/
 │       │   ├── checkpoint_step3_svgs.json
 │       │   ├── checkpoint_step4_manim.json
 │       │   ├── generated_scene.py
-│       │   ├── assets/            # SVG files
-│       │   ├── audios/            # WAV files per segment
-│       │   └── logs/              # model_interactions.jsonl
+│       │   ├── rendered_video.mp4
+│       │   ├── assets/             # SVG files
+│       │   ├── audios/             # WAV files per segment
+│       │   └── logs/               # model_interactions.jsonl
 │       └── projects/
 │           └── <project-id>/
 │               ├── project_info.json
 │               └── scenes/
-├── gradio_app.py          # Browser UI
-├── coqui_server.py        # Local XTTS TTS server (port 8000)
-├── test_apis.py           # API health check script
-├── migrate_run_info.py    # Migrate old run_info.txt → run_info.json
-└── .env                   # API keys
+├── web_server.py           # FastAPI backend — REST + SSE endpoints (port 8080)
+├── web_ui/                 # Next.js 16 + shadcn/ui frontend (port 3000)
+│   ├── app/                # App Router pages + layout
+│   ├── components/
+│   │   ├── tabs/           # NewVideoTab, ResumeRunTab, ProjectsTab
+│   │   ├── LogStream.tsx   # Live log output panel
+│   │   ├── VideoPlayer.tsx # Video preview
+│   │   └── ui/             # shadcn/ui components
+│   ├── hooks/useSSE.ts     # SSE streaming hook
+│   └── lib/api.ts          # Typed API client
+├── start_ui.sh             # Launch backend + frontend together
+├── gradio_app.py           # Legacy Gradio UI (still functional)
+├── coqui_server.py         # Local XTTS TTS server (port 8000)
+├── test_apis.py            # API health check script
+├── migrate_run_info.py     # Migrate old run_info.txt → run_info.json
+└── .env                    # API keys
 ```
 
 ---
 
 ## Setup
 
-**Requirements:** Python 3.11+, [Manim Community Edition](https://docs.manim.community/en/stable/installation.html)
+**Requirements:** Python 3.11+, Node.js 18+, [Manim Community Edition](https://docs.manim.community/en/stable/installation.html)
 
 ```bash
-# Install dependencies
+# Install Python dependencies
 uv pip install -r requirements.txt   # or: pip install -e .
+
+# Install Node.js dependencies
+cd web_ui && npm install
 ```
 
 ### API Keys
 
-Create a `.env` file in the project root with the keys for whichever provider(s) you want to use:
+Create a `.env` file in the project root:
 
 ```bash
 # Google Gemini (default)
 GEMINI_API_KEY=your_key_here
 
-# OpenAI
-OPENAI_API_KEY=your_key_here
-
-# OpenRouter — when set, ALL model calls are automatically routed through OpenRouter
+# OpenRouter — when set, ALL model calls are routed through OpenRouter
 OPENROUTER_API_KEY=your_key_here
 
 # Optional: override the default OpenRouter models
-OPENROUTER_FLASH_MODEL=google/gemini-3-flash-preview   # default
-OPENROUTER_PRO_MODEL=google/gemini-3-flash-preview     # default
+OPENROUTER_FLASH_MODEL=google/gemini-3-flash-preview
+OPENROUTER_PRO_MODEL=google/gemini-3-flash-preview
 
 # ElevenLabs TTS (optional — local Coqui XTTS is used by default)
 ELEVENLABS_API_KEY=your_key_here
-ELEVENLABS_VOICE_ID=cgSgspJ2msm6clMCkdW9   # default voice; override with any ElevenLabs voice ID
-ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # default model; supports Arabic/Darija
+ELEVENLABS_VOICE_ID=cgSgspJ2msm6clMCkdW9
+ELEVENLABS_MODEL_ID=eleven_multilingual_v2
 ```
 
 #### Check API status
@@ -127,81 +139,58 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2  # default model; supports Arabic/Dar
 python test_apis.py
 ```
 
-This pings each configured provider and reports whether it's reachable or rate-limited.
-
 ### TTS Server
 
-Aji Nafhem uses a local [Coqui XTTS](https://github.com/coqui-ai/TTS) model fine-tuned on Moroccan Darija, specifically [`medmac01/darija_xtt_2.0`](https://huggingface.co/medmac01/darija_xtt_2.0) from Hugging Face. The pipeline calls it at `http://localhost:8000/tts`.
+Aji Nafhem uses a local [Coqui XTTS](https://github.com/coqui-ai/TTS) model fine-tuned on Moroccan Darija — [`medmac01/darija_xtt_2.0`](https://huggingface.co/medmac01/darija_xtt_2.0).
 
-**Download the model** from Hugging Face: [medmac01/darija_xtt_2.0](https://huggingface.co/medmac01/darija_xtt_2.0)
-
-**Required files** — place these under `model/` in the project root:
+**Required files** — place under `model/` in the project root:
 
 ```
 model/
-├── model.pth               # fine-tuned XTTS checkpoint
-├── config.json             # XTTS config
-├── vocab.json              # vocabulary
-└── speaker_reference.wav   # reference audio for voice cloning
+├── model.pth
+├── config.json
+├── vocab.json
+└── speaker_reference.wav
 ```
 
-**Start the server** before running any pipeline:
-
 ```bash
-# Runs on port 8000, uses Apple MPS by default (change device in coqui_server.py for CUDA/CPU)
+# Start TTS server (port 8000, Apple MPS by default)
 python coqui_server.py
 ```
 
-Health check: `curl http://localhost:8000/health` → `{"status": "ok"}`
-
-> If the TTS server is unreachable, the pipeline will substitute 1-second silent WAV files so Manim can still compile and render — the video will have no voiceover but all animations will be present.
+> If the TTS server is unreachable, the pipeline substitutes 1-second silent WAV files so Manim can still compile — the video will have no voiceover but all animations will render.
 
 ---
 
 ## Usage
 
-### Gradio UI (recommended)
+### Web UI (recommended)
 
 ```bash
-python gradio_app.py
-# Opens at http://localhost:7861
+# Default — uses agentic_video_gen/runs/ for run storage
+./start_ui.sh
+
+# Custom runs directory
+RUNS_DIR=/path/to/runs ./start_ui.sh
 ```
 
-**New Video tab** — enter a topic and audience level, pick a model provider and TTS provider, click Generate.
+Opens:
+- **Frontend:** http://localhost:3000
+- **Backend API:** http://localhost:8080
 
-**Resume Run tab** — pick an existing run, choose which step to restart from, optionally:
-- Check *Copy to new run* to fork instead of overwrite
-- Expand *Per-step nudges* to add extra instructions to any step's prompt
-- Upload an image alongside the force-fix prompt for multimodal debugging
+**New Video tab** — enter a topic and audience level, pick a model + TTS provider, click Generate. Logs stream live and the video appears on completion.
 
-**Multi-Scene Project tab** — create projects made of multiple scenes:
-- Add scenes one by one, each building on the previous
-- Toggle *Carry solver context in prompts* to pass prior scene knowledge into new scenes
-- Re-run individual scenes from any step
+**Resume Run tab** — pick an existing run and choose which step to restart from. Options:
+- *Copy to new run* — fork instead of overwrite
+- *Per-step nudges* — inject extra instructions into any step's prompt
+- *Force-fix prompt* — describe a specific fix to apply at compile time
+
+**Projects tab** — build multi-scene long-form videos:
+- Create a project, add scenes one by one (each building on the previous)
+- Toggle *Carry solver context* to pass prior scene knowledge into new scenes
+- Import scenes from existing runs or other projects
+- Re-run individual scenes from any step, with nudges and force-fix
 - Stitch all scenes into a single MP4
-
-#### Model Provider & TTS Provider
-
-All three tabs share global **Model Provider** and **TTS Provider** dropdowns at the top.
-
-**Model Provider:**
-
-| Option | Backend |
-|--------|---------|
-| `google` | Gemini Flash (default) |
-| `openai` | GPT-5 mini / GPT-5.2 |
-| `openrouter` | OpenRouter — routes to `google/gemini-3-flash-preview` by default |
-
-Setting `OPENROUTER_API_KEY` in `.env` will automatically route all LLM calls through OpenRouter regardless of the UI selection.
-
-**TTS Provider:**
-
-| Option | Backend |
-|--------|---------|
-| `local` | Coqui XTTS server at `localhost:8000` (default) |
-| `elevenlabs` | ElevenLabs API — requires `ELEVENLABS_API_KEY`; uses `eleven_multilingual_v2` for Darija |
-
-ElevenLabs returns MP3 which is automatically converted to WAV. Voice and model can be overridden via `ELEVENLABS_VOICE_ID` and `ELEVENLABS_MODEL_ID`.
 
 ### CLI
 
@@ -213,7 +202,7 @@ python -m agentic_video_gen.pipeline run "How does photosynthesis work?" --audie
 python -m agentic_video_gen.pipeline resume <run-id> --from-step 3
 ```
 
-### Render a finished scene
+### Render a finished scene manually
 
 ```bash
 MANIM_RUN_DIR=agentic_video_gen/runs/<run-id> \
@@ -224,18 +213,25 @@ MANIM_RUN_DIR=agentic_video_gen/runs/<run-id> \
 
 ## Models
 
-| Step | Google | OpenAI | OpenRouter (default) |
-|------|--------|--------|----------------------|
-| Solver | `gemini-3-flash-preview` | `gpt-5.2` | `google/gemini-3-flash-preview` |
-| Script, SVG, Manim, Fix | `gemini-3-flash-preview` | `gpt-5-mini` | `google/gemini-3-flash-preview` |
+| Step | Google | OpenRouter (default) |
+|------|--------|----------------------|
+| Solver | `gemini-3-flash-preview` | `google/gemini-3-flash-preview` |
+| Script, SVG, Manim, Fix | `gemini-3-flash-preview` | `google/gemini-3-flash-preview` |
 
-Override OpenRouter models via `OPENROUTER_FLASH_MODEL` / `OPENROUTER_PRO_MODEL` env vars.
+Override OpenRouter models via `OPENROUTER_FLASH_MODEL` / `OPENROUTER_PRO_MODEL`.
+
+---
+
+## TTS Providers
+
+| Option | Backend |
+|--------|---------|
+| `local` | Coqui XTTS at `localhost:8000` (default) |
+| `elevenlabs` | ElevenLabs API — requires `ELEVENLABS_API_KEY`; MP3 auto-converted to WAV |
 
 ---
 
 ## Migrating Old Runs
-
-If you have runs with the legacy `run_info.txt` format:
 
 ```bash
 python migrate_run_info.py --dry-run   # preview
