@@ -74,13 +74,52 @@ def resolve_scene_dir(scene_entry: dict) -> Path:
 # Adding / removing scenes
 # ---------------------------------------------------------------------------
 
-def add_native_scene(project_dir: Path, scene_index: int, query: str) -> Path:
+def _shift_scenes_up(project_dir: Path, from_index: int) -> None:
+    """Increment scene_index for all scenes >= from_index.
+
+    For native scenes, also renames the scene directory on disk so the
+    directory name stays in sync with the index.
+    """
+    info = load_project_info(project_dir)
+    project_id = info["project_id"]
+
+    # Process in reverse order to avoid collisions (e.g. 3→4 before 2→3)
+    affected = sorted(
+        [s for s in info["scenes"] if s["scene_index"] >= from_index],
+        key=lambda s: s["scene_index"],
+        reverse=True,
+    )
+    for entry in affected:
+        new_idx = entry["scene_index"] + 1
+        if entry["source"] == "native":
+            old_dir = RUNS_DIR / entry["scene_dir"]
+            new_scene_rel = f"projects/{project_id}/scenes/{new_idx}"
+            new_dir = RUNS_DIR / new_scene_rel
+            if old_dir.exists():
+                old_dir.rename(new_dir)
+            entry["scene_dir"] = new_scene_rel
+        entry["scene_index"] = new_idx
+
+    info["scenes"].sort(key=lambda s: s["scene_index"])
+    save_project_info(project_dir, info)
+    print(f"[project] Shifted scenes >= {from_index} up by 1")
+
+
+def add_native_scene(project_dir: Path, scene_index: int, query: str, insert_shift: bool = False) -> Path:
     """Append a native scene entry to project_info.json and create its directory.
+
+    If insert_shift=True and a scene already exists at scene_index, all scenes
+    at >= scene_index are shifted up by one before inserting.
 
     Returns the scene directory path.
     """
     info = load_project_info(project_dir)
     project_id = info["project_id"]
+
+    existing = {s["scene_index"] for s in info["scenes"]}
+    if insert_shift and scene_index in existing:
+        _shift_scenes_up(project_dir, scene_index)
+        info = load_project_info(project_dir)  # reload after shift
 
     scene_dir_rel = f"projects/{project_id}/scenes/{scene_index}"
     scene_dir_abs = RUNS_DIR / scene_dir_rel
@@ -92,7 +131,7 @@ def add_native_scene(project_dir: Path, scene_index: int, query: str) -> Path:
         "scene_dir": scene_dir_rel,
         "source": "native",
     }
-    # Replace existing entry with same index if present
+    # Replace existing entry with same index if present (replace, not shift)
     info["scenes"] = [s for s in info["scenes"] if s["scene_index"] != scene_index]
     info["scenes"].append(entry)
     info["scenes"].sort(key=lambda s: s["scene_index"])
@@ -272,6 +311,8 @@ def run_project_scene(
     from_step: int = 1,
     nudges: dict[int, str] | None = None,
     force_fix_prompt: str | None = None,
+    force_fix_image: str | None = None,
+    insert_shift: bool = False,
 ) -> Path:
     """Run (or resume) a native scene within a project.
 
@@ -285,7 +326,7 @@ def run_project_scene(
         raise FileNotFoundError(f"Project not found: {project_dir}")
 
     # Ensure scene entry exists (creates dir if needed)
-    add_native_scene(project_dir, scene_index, query)
+    add_native_scene(project_dir, scene_index, query, insert_shift=insert_shift)
 
     # Derive run_id from the scene dir name relative to RUNS_DIR
     # The scene dir is RUNS_DIR/projects/{project_id}/scenes/{scene_index}
@@ -307,6 +348,7 @@ def run_project_scene(
         nudges=nudges,
         previous_scenes_context=previous_ctx if previous_ctx else None,
         force_fix_prompt=force_fix_prompt,
+        force_fix_image=force_fix_image,
     )
 
     print(f"[project] Scene {scene_index} complete → {run_dir}")

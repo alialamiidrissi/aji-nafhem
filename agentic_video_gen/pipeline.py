@@ -7,7 +7,6 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
-from pydantic_ai.messages import ModelResponse, TextPart
 
 from agentic_video_gen.schemas import (
     SolvedSteps,
@@ -16,6 +15,7 @@ from agentic_video_gen.schemas import (
     AssetMetadata,
     ManimCode,
 )
+from pydantic_ai import BinaryContent
 from agentic_video_gen.agents import (
     get_solver_agent,
     get_script_agent,
@@ -49,36 +49,26 @@ _STEP_NAMES = {
 }
 
 
-def _log_model_call(run_dir: Path, step: int | str, prompt: str, result) -> None:
+def _log_model_call(run_dir: Path, step: int | str, _prompt: str, result) -> None:
     """Append one JSONL entry to logs/model_interactions.jsonl for every agent call."""
     logs_dir = run_dir / "logs"
     logs_dir.mkdir(exist_ok=True)
 
-    # Extract raw text parts from the model response messages
-    response_texts = []
-    for msg in result.all_messages():
-        if isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, TextPart):
-                    response_texts.append(part.content)
-
-    # Token usage (may not always be populated)
     usage = result.usage()
-    usage_dict = {
-        "requests": usage.requests,
-        "request_tokens": usage.request_tokens,
-        "response_tokens": usage.response_tokens,
-        "total_tokens": usage.total_tokens,
-    }
 
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "step": step,
         "step_name": _STEP_NAMES.get(step, str(step)),
-        "prompt": prompt,
-        "response_text": "\n---\n".join(response_texts),
+        # Full message exchange: system prompt + user turn + model response
+        "messages": json.loads(result.all_messages_json()),
         "output": json.loads(result.output.model_dump_json()),
-        "usage": usage_dict,
+        "usage": {
+            "requests": usage.requests,
+            "request_tokens": usage.request_tokens,
+            "response_tokens": usage.response_tokens,
+            "total_tokens": usage.total_tokens,
+        },
     }
 
     log_file = logs_dir / "model_interactions.jsonl"
@@ -149,6 +139,7 @@ def run_pipeline(
     nudges: dict[int, str] | None = None,
     previous_scenes_context: list | None = None,
     force_fix_prompt: str | None = None,
+    force_fix_image: str | None = None,
 ):
     """
     Runs the full educational video generation pipeline.
@@ -347,12 +338,20 @@ def run_pipeline(
         if force_fix_prompt and force_fix_prompt.strip():
             print(f"\n  [force-fix] Applying visual fix: {force_fix_prompt[:80]}...")
             current_code = out_file.read_text(encoding="utf-8")
-            _fix_prompt = (
+            _fix_text = (
                 f"The following Manim Python file has VISUAL ISSUES reported by the user "
                 f"(the code compiles and runs, but the animation looks wrong).\n\n"
                 f"--- VISUAL ISSUE DESCRIPTION ---\n{force_fix_prompt.strip()}\n\n"
                 f"--- CURRENT SOURCE ---\n{current_code}"
             )
+            if force_fix_image:
+                image_bytes = Path(force_fix_image).read_bytes()
+                import imghdr
+                _mime = f"image/{imghdr.what(force_fix_image) or 'png'}"
+                _fix_prompt = [_fix_text, BinaryContent(data=image_bytes, media_type=_mime)]
+                print(f"  [force-fix] Attaching screenshot ({len(image_bytes)} bytes, {_mime})")
+            else:
+                _fix_prompt = _fix_text
             fix_result = get_manim_fix_agent().run_sync(_fix_prompt)
             _log_model_call(run_dir, "manim_fix", _fix_prompt, fix_result)
             patch = fix_result.output

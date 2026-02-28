@@ -154,6 +154,7 @@ def _run_pipeline_thread(
     from_step: int = 1,
     nudges: dict | None = None,
     force_fix_prompt: str | None = None,
+    force_fix_image: str | None = None,
 ):
     """Target for the pipeline thread. Captures stdout into log_q."""
     orig_stdout = sys.stdout
@@ -170,6 +171,7 @@ def _run_pipeline_thread(
             from_step=from_step,
             nudges=nudges or None,
             force_fix_prompt=force_fix_prompt or None,
+            force_fix_image=force_fix_image or None,
         )
         result_box["run_dir"] = run_dir
     except Exception as exc:
@@ -229,6 +231,7 @@ def _stream_pipeline_and_render(
     from_step: int = 1,
     nudges: dict | None = None,
     force_fix_prompt: str | None = None,
+    force_fix_image: str | None = None,
 ):
     """Generator: runs pipeline thread, then render thread, yielding (logs, video, done)."""
     log_q: queue.Queue = queue.Queue()
@@ -238,7 +241,7 @@ def _stream_pipeline_and_render(
     t = threading.Thread(
         target=_run_pipeline_thread,
         args=(query, audience, log_q, result_box),
-        kwargs={"run_id": run_id, "from_step": from_step, "nudges": nudges, "force_fix_prompt": force_fix_prompt},
+        kwargs={"run_id": run_id, "from_step": from_step, "nudges": nudges, "force_fix_prompt": force_fix_prompt, "force_fix_image": force_fix_image},
         daemon=True,
     )
     t.start()
@@ -331,18 +334,24 @@ def _run_preview(run_choice: str) -> str:
             completed.append(f"⬜ Step {s} — {step_names[s]}")
 
     has_scene = "✅" if (run_dir / "generated_scene.py").exists() else "⬜"
-
+    video_path = run_dir / "rendered_video.mp4"
+    if video_path.exists():
+        video =  gr.update(value=str(video_path))
+    else:
+        video = gr.update(value = None)
     return (
         f"**Run ID:** `{run_id}`\n\n"
         f"**Query:** {info['query']}\n\n"
         f"**Audience:** {info['audience']}\n\n"
         f"**Checkpoints:**\n"
         + "\n".join(f"- {c}" for c in completed)
-        + f"\n- {has_scene} generated_scene.py"
+        + f"\n- {has_scene} generated_scene.py",
+        video
+
     )
 
 
-def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2: str, n3: str, n4: str, force_fix: str):
+def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2: str, n3: str, n4: str, force_fix: str, force_fix_image: str | None = None):
     """Resume an existing run from the selected step, with optional per-step nudges."""
     if not run_choice:
         yield "Please select a run.", gr.update(visible=False), gr.update(visible=False)
@@ -371,6 +380,7 @@ def resume_video(run_choice: str, step_choice: str, copy_run: bool, n1: str, n2:
         run_id=run_id, from_step=from_step,
         nudges=nudges,
         force_fix_prompt=force_fix.strip() or None,
+        force_fix_image=force_fix_image or None,
     )
 
 
@@ -655,6 +665,8 @@ def _run_project_scene_ui(
     result_box: dict,
     scene_index: int | None = None,
     force_fix_prompt: str | None = None,
+    force_fix_image: str | None = None,
+    insert_shift: bool = False,
 ):
     """Thread target: run a project scene and stream logs.
 
@@ -687,6 +699,8 @@ def _run_project_scene_ui(
             from_step=from_step,
             nudges=nudges_dict or None,
             force_fix_prompt=force_fix_prompt,
+            force_fix_image=force_fix_image,
+            insert_shift=insert_shift,
         )
         result_box["run_dir"] = run_dir
         result_box["scene_index"] = scene_index
@@ -706,6 +720,7 @@ def _stream_project_scene(
     scene_query: str,
     from_step_str: str,
     n1: str, n2: str, n3: str, n4: str,
+    scene_index_override: float | None = None,
 ):
     """Generator: run project scene pipeline then render, yield (logs, video, md, scene_choices)."""
     no_choices = gr.update()
@@ -714,6 +729,8 @@ def _stream_project_scene(
         return
 
     nudges = {k: v for k, v in {1: n1, 2: n2, 3: n3, 4: n4}.items() if v and v.strip()} or None
+    scene_index = int(scene_index_override) if scene_index_override is not None else None
+    insert_shift = scene_index is not None  # shift existing scenes when index is explicit
     log_q: queue.Queue = queue.Queue()
     result_box: dict = {}
     accumulated = ""
@@ -721,6 +738,7 @@ def _stream_project_scene(
     t = threading.Thread(
         target=_run_project_scene_ui,
         args=(project_choice, scene_query, from_step_str, nudges, log_q, result_box),
+        kwargs={"scene_index": scene_index, "insert_shift": insert_shift},
         daemon=True,
     )
     t.start()
@@ -784,6 +802,7 @@ def _stream_rerun_scene(
     from_step_str: str,
     rr_n1: str, rr_n2: str, rr_n3: str, rr_n4: str,
     rr_force_fix: str,
+    rr_force_fix_image: str | None = None,
 ):
     """Generator: re-run an existing native scene from the chosen step."""
     no_choices = gr.update()
@@ -819,7 +838,7 @@ def _stream_rerun_scene(
     t = threading.Thread(
         target=_run_project_scene_ui,
         args=(project_choice, query, from_step_str, nudges, log_q, result_box),
-        kwargs={"scene_index": idx, "force_fix_prompt": force_fix},
+        kwargs={"scene_index": idx, "force_fix_prompt": force_fix, "force_fix_image": rr_force_fix_image or None},
         daemon=True,
     )
     t.start()
@@ -963,6 +982,15 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 info="Creates a fresh run directory forked from the selected run. The original is left untouched.",
             )
 
+
+            with gr.Accordion("🎬 Scene video preview", open=False):
+                proj_scene_preview_video_resume = gr.Video(
+                    label="Selected scene video",
+                    interactive=False,
+                    visible=True,
+                )
+
+
             with gr.Accordion("Per-step nudges (optional)", open=False):
                 gr.Markdown(
                     "Add extra instructions for any step that will run. "
@@ -982,6 +1010,11 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                     "Leave blank to skip. Applied before the compilation loop when resuming from step 5."
                 ),
             )
+            force_fix_image_input = gr.Image(
+                label="Screenshot of the issue (optional)",
+                type="filepath",
+                sources=["upload", "clipboard"],
+            )
 
             resume_btn = gr.Button("Resume from Step", variant="primary", size="lg")
 
@@ -989,7 +1022,7 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
             resume_video_out = gr.Video(label="Generated Video", visible=False)
             resume_done = gr.Markdown("### ✅ Video ready!", visible=False)
 
-            run_dropdown.change(fn=_run_preview, inputs=run_dropdown, outputs=run_preview)
+            run_dropdown.change(fn=_run_preview, inputs=run_dropdown, outputs=[run_preview, proj_scene_preview_video_resume])
 
             refresh_btn.click(
                 fn=lambda: gr.update(choices=_list_runs()),
@@ -998,7 +1031,7 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
 
             resume_btn.click(
                 fn=resume_video,
-                inputs=[run_dropdown, step_radio, copy_run_checkbox, nudge1, nudge2, nudge3, nudge4, force_fix_input],
+                inputs=[run_dropdown, step_radio, copy_run_checkbox, nudge1, nudge2, nudge3, nudge4, force_fix_input, force_fix_image_input],
                 outputs=[resume_logs, resume_video_out, resume_done],
             )
 
@@ -1076,6 +1109,11 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                     "Leave blank to skip."
                 ),
             )
+            rr_force_fix_image = gr.Image(
+                label="Screenshot of the issue (optional)",
+                type="filepath",
+                sources=["upload", "clipboard"],
+            )
             with gr.Accordion("Per-step nudges for re-run (optional)", open=False):
                 rr_nudge1 = gr.Textbox(label="Step 1 — Solver", lines=2)
                 rr_nudge2 = gr.Textbox(label="Step 2 — Script", lines=2)
@@ -1097,17 +1135,26 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                     placeholder="e.g. Part a: finding the discriminant",
                 )
                 scene_query_preview = gr.Markdown(value="*Query preview will appear here...*")
-                gen_from_step = gr.Dropdown(
-                    label="Start from step",
-                    choices=STEP_CHOICES,
-                    value=STEP_CHOICES[0],
-                )
+                with gr.Row():
+                    gen_from_step = gr.Dropdown(
+                        label="Start from step",
+                        choices=STEP_CHOICES,
+                        value=STEP_CHOICES[0],
+                        scale=3,
+                    )
+                    scene_index_input = gr.Number(
+                        label="Scene index (leave blank for next)",
+                        value=None,
+                        precision=0,
+                        minimum=1,
+                        scale=1,
+                    )
                 with gr.Accordion("Per-step nudges (optional)", open=False):
                     proj_nudge1 = gr.Textbox(label="Step 1 — Solver", lines=2)
                     proj_nudge2 = gr.Textbox(label="Step 2 — Script", lines=2)
                     proj_nudge3 = gr.Textbox(label="Step 3 — SVGs", lines=2)
                     proj_nudge4 = gr.Textbox(label="Step 4 — Manim", lines=2)
-                run_scene_btn = gr.Button("▶ Run Next Scene", variant="primary")
+                run_scene_btn = gr.Button("▶ Run Scene", variant="primary")
 
             with gr.Column(visible=False) as import_scene_col:
                 import_source = gr.Dropdown(
@@ -1221,7 +1268,7 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 inputs=[
                     proj_dropdown, proj_scene_select, proj_rerun_step,
                     rr_nudge1, rr_nudge2, rr_nudge3, rr_nudge4,
-                    rr_force_fix,
+                    rr_force_fix, rr_force_fix_image,
                 ],
                 outputs=[proj_logs, proj_video, proj_scene_list, proj_scene_select],
             )
@@ -1258,6 +1305,7 @@ with gr.Blocks(title="Agentic Video Generator") as demo:
                 inputs=[
                     proj_dropdown, scene_query_input, gen_from_step,
                     proj_nudge1, proj_nudge2, proj_nudge3, proj_nudge4,
+                    scene_index_input,
                 ],
                 outputs=[proj_logs, proj_video, proj_scene_list, proj_scene_select],
             )
