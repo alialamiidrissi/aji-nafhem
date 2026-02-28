@@ -769,7 +769,14 @@ def importable_sources():
             except Exception:
                 pass
 
-    return sources
+    # Deduplicate by path — an imported scene may reference the same dir as a standalone run
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for s in sources:
+        if s["path"] not in seen:
+            seen.add(s["path"])
+            unique.append(s)
+    return unique
 
 
 # ---------------------------------------------------------------------------

@@ -343,7 +343,7 @@ export function ProjectsTab() {
                     </SelectTrigger>
                     <SelectContent>
                       {importSources.map((s) => (
-                        <SelectItem key={s.path} value={s.path}>
+                        <SelectItem key={`${s.type}:${s.path}`} value={s.path}>
                           <Badge variant="outline" className="text-xs mr-1">{s.type}</Badge>
                           {s.label}
                         </SelectItem>
