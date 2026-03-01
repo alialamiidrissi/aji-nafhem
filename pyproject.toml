@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aji-nafhem"
+version = "0.1.0"
+description = "AI-powered Moroccan Darija educational video generator"
+requires-python = ">=3.11"
+dependencies = [
+    # LLM agents
+    "pydantic-ai[google,openai,openrouter]",
+    "tenacity",
+    "httpx",
+    # Data / validation
+    "pydantic>=2.0",
+    # Pipeline runtime
+    "manim",
+    "soundfile",
+    "requests",
+    # API server
+    "fastapi",
+    "uvicorn[standard]",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+# Legacy Gradio UI  →  pip install -e ".[gradio]"
+gradio = ["gradio"]
+# Coqui XTTS TTS server  →  pip install -e ".[tts-server]"
+tts-server = [
+    "torch",
+    "numpy",
+    "scipy",
+    "coqui-tts",
+]
+# Everything
+all = ["aji-nafhem[gradio,tts-server]"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["agentic_video_gen"]

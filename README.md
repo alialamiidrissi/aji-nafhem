@@ -105,8 +105,11 @@ aji-nafhem/
 **Requirements:** Python 3.11+, Node.js 18+, [Manim Community Edition](https://docs.manim.community/en/stable/installation.html)
 
 ```bash
-# Install Python dependencies
-uv pip install -r requirements.txt   # or: pip install -e .
+# Install main pipeline + FastAPI backend
+uv pip install -e .
+
+# Include legacy Gradio UI
+uv pip install -e ".[gradio]"
 
 # Install Node.js dependencies
 cd web_ui && npm install
@@ -143,7 +146,14 @@ python test_apis.py
 
 Aji Nafhem uses a local [Coqui XTTS](https://github.com/coqui-ai/TTS) model fine-tuned on Moroccan Darija — [`medmac01/darija_xtt_2.0`](https://huggingface.co/medmac01/darija_xtt_2.0).
 
-**Required files** — place under `model/` in the project root:
+```bash
+# Install TTS server dependencies (torch + coqui-tts)
+uv pip install -e ".[tts-server]"
+# or, without the main package:
+uv pip install -r requirements-tts-server.txt
+```
+
+**Required model files** — place under `model/` in the project root:
 
 ```
 model/
@@ -191,6 +201,28 @@ Opens:
 - Import scenes from existing runs or other projects
 - Re-run individual scenes from any step, with nudges and force-fix
 - Stitch all scenes into a single MP4
+
+### Legacy Gradio UI
+
+```bash
+python gradio_app.py
+# Opens at http://localhost:7861
+```
+
+**New Video tab** — enter a topic and audience level, pick a model provider and TTS provider, click Generate.
+
+**Resume Run tab** — pick an existing run, choose which step to restart from, optionally:
+- Check *Copy to new run* to fork instead of overwrite
+- Expand *Per-step nudges* to add extra instructions to any step's prompt
+- Upload an image alongside the force-fix prompt for multimodal debugging
+
+**Multi-Scene Project tab** — create projects made of multiple scenes:
+- Add scenes one by one, each building on the previous
+- Toggle *Carry solver context in prompts* to pass prior scene knowledge into new scenes
+- Re-run individual scenes from any step
+- Stitch all scenes into a single MP4
+
+---
 
 ### CLI
 
