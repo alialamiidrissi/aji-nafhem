@@ -1,0 +1,9 @@
+# Coqui XTTS TTS server (coqui_server.py)
+# Install into a separate env or after the main package.
+# Apple Silicon: torch ships with MPS support out of the box.
+torch
+numpy
+scipy
+fastapi
+uvicorn[standard]
+coqui-tts
