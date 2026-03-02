@@ -11,6 +11,7 @@ from agentic_video_gen.schemas import (
     SolvedSteps,
     ScriptSegments,
     VisualAssets,
+    MapRequestList,
     ManimCode,
     ManimPatch,
 )
@@ -151,10 +152,18 @@ _SCRIPT_PROMPT = (
     "Your task is to transform this into a fun, engaging, and pedagogically clear voiceover script in Moroccan Darija.\n\n"
 
     "STRICT RULES:\n"
-    "- The script MUST be written entirely in Arabic letters.\n"
-    "- Use heavy and consistent tashkeel (diacritics) to maximize pronunciation clarity for TTS.\n"
-    "- Do NOT use Latin letters, abbreviations, mathematical symbols, or special characters.\n"
-    "- Rewrite equations, numbers, variables, and symbols fully in Arabic words.\n"
+    "- The script must be written primarily in Arabic script with heavy and consistent tashkeel "
+    "(diacritics) to maximize pronunciation clarity for TTS.\n"
+    "- EXCEPTION — Latin for non-Arabic sounds: Darija contains sounds absent in standard Arabic "
+    "(e.g., /p/, /v/, hard /g/). When a Darija or loanword requires such a sound, write that "
+    "word in its Latin/French spelling rather than a phonetically misleading Arabic transliteration. "
+    "Example: write 'politique' not 'پوليتيك', 'programme' not 'پروگرام'.\n"
+    "- EXCEPTION — Technical and scientific terms of French/Latin origin: keep them in their "
+    "original French spelling — do NOT transliterate them into Arabic script. "
+    "Example: write 'exponentielle' not 'إِيكْسْبُونُونْسِيل', 'force' not 'فُورْسْ', "
+    "'vitesse' not 'فِيتِيسْ', 'énergie' not 'إِينِيرْجِي'.\n"
+    "- Do NOT use mathematical symbols (=, +, ×, etc.), LaTeX notation, or numeric digits.\n"
+    "- Rewrite equations and numbers fully in Arabic words.\n"
     "- Avoid phonetically complex or ambiguous Darija words that may confuse a TTS engine.\n"
     "- Prefer simpler vocabulary and smoother phonetic constructions.\n"
     "- Adapt tone, humor, and vocabulary complexity to the specified Audience Level.\n"
@@ -190,14 +199,17 @@ _SCRIPT_PROMPT = (
 # ---------------------------------------------------------
 _SVG_PROMPT = (
     "You are a professional vector graphic designer building illustration assets for Manim animations. "
-    "Your input contains four fields:\n"
+    "Your input contains five fields:\n"
     "  - 'Audience Level': educational level of the target learner.\n"
     "  - 'Original Query': the user's original question.\n"
     "  - 'Analytical Solution': the solved steps JSON.\n"
     "  - 'Voiceover Script': a JSON list of segments, each with an id, "
-    "a Darija script line, and a visual_action description.\n\n"
+    "a Darija script line, and a visual_action description.\n"
+    "  - 'Already Generated Map Assets': a (possibly empty) list of PNG map filenames "
+    "already available in the assets folder. Do NOT generate an SVG for any visual element "
+    "that is already covered by one of these maps.\n\n"
     "From the visual_action descriptions, identify all unique visual elements needed. "
-    "Generate one SVG per element.\n\n"
+    "Generate one SVG per element — excluding anything covered by a pre-generated map.\n\n"
     "Aesthetic Rules: Produce beautiful, colorful, modern flat-design vectors with vibrant colors. "
     "Use distinct shapes and thoughtful design — not ugly blobs.\n"
     "Technical Rules (STRICT — Manim SVGMobject cannot handle complex SVGs):\n"
@@ -233,7 +245,18 @@ _MANIM_PROMPT = (
     "2. Import ONLY: `from agentic_video_gen.base_scene import BaseEducationalScene` "
     "   and `from manim import *`.\n"
     "3. Inside `construct`, call `self.setup_assets()` first.\n"
-    "4. Load SVGs with `self.get_svg('filename.svg')` — just use the filename, it's already on disk.\n"
+    "4. Loading assets — choose the right loader based on asset_type in the metadata:\n"
+    "   - SVG assets  → `self.get_svg('filename.svg')` returns an SVGMobject.\n"
+    "   - Image assets (PNG maps) → `self.get_image('filename.png')` returns an ImageMobject.\n"
+    "   Never use get_svg() on a .png file or get_image() on a .svg file.\n"
+    "4a. Placing map images — MANDATORY sizing rules:\n"
+    "   - Each map asset metadata includes 'pixel_dimensions', e.g., '2100x1350'.\n"
+    "   - The Manim frame is 1920×1080 pixels = 14.22×8 Manim units.\n"
+    "   - To fill the full frame: `map_img.scale_to_fit_width(config.frame_width)`\n"
+    "   - To fill a half-screen panel: `map_img.scale_to_fit_width(config.frame_width * 0.5)`\n"
+    "   - Always call scale_to_fit_width (or scale_to_fit_height) immediately after get_image() "
+    "before adding to the scene — never rely on the default ImageMobject size.\n"
+    "   - After scaling, position with `.to_edge()` or `.move_to(ORIGIN)` as appropriate.\n"
     "5. Sync animations to audio using the context manager:\n"
     "   `with self.speech('segment_id'):`\n"
     "   Animations inside this block must visually match what is being spoken in that segment.\n"
@@ -307,6 +330,49 @@ _MANIM_FIX_PROMPT = (
 )
 
 
+_MAP_REQUEST_PROMPT = (
+    "You are a geographic asset planner for an educational video pipeline.\n\n"
+
+    "You will receive:\n"
+    "  - 'Original Query': the topic being explained.\n"
+    "  - 'Voiceover Script': a JSON ScriptSegments object whose visual_action fields describe "
+    "what the viewer sees in each segment.\n\n"
+
+    "Your task: decide whether any segment requires a real geographic map, and if so, "
+    "output a MapRequestList describing exactly what maps to generate.\n\n"
+
+    "Return an EMPTY list ('requests': []) if:\n"
+    "  - The content is purely mathematical, conceptual, or scientific (no geography needed).\n"
+    "  - The visual_actions only reference diagrams, equations, or abstract illustrations.\n\n"
+
+    "Return one MapRequest per distinct map needed if:\n"
+    "  - The content involves real-world geography: countries, regions, seas, straits, borders, "
+    "conflict zones, trade routes, or geopolitical relationships.\n\n"
+
+    "For each MapRequest:\n"
+    "  - 'name': a descriptive PNG filename, e.g., 'middle_east_map.png'.\n"
+    "  - 'bbox': tight bounding box [west, south, east, north] in decimal degrees that frames "
+    "all relevant countries with ~5° padding. Example for Middle East: [22, 10, 68, 43]. "
+    "CRITICAL: every marker lon/lat MUST fall inside this bbox — never add a marker for a "
+    "location (e.g. Washington DC) that is geographically outside the region being mapped.\n"
+    "  - 'highlight_countries': REQUIRED — always fill this with at least the main countries "
+    "relevant to the scene. Use exact Natural Earth English country names "
+    "(e.g., 'Iran', 'Saudi Arabia', 'United Arab Emirates', 'United States of America'). "
+    "Assign distinct, visually contrasting hex colors. An empty dict produces a plain grey map.\n"
+    "  - 'water_labels': label key seas, gulfs, and straits that appear in the bbox. "
+    "Do NOT add a water label for a feature that already has a marker.\n"
+    "  - 'markers': specific strategic points (cities, chokepoints, bases) that lie WITHIN the bbox. "
+    "Each marker needs lon/lat (decimal degrees), a short label, and a dot_color.\n"
+    "  - 'title': a concise English title for the map, or empty string.\n\n"
+
+    "Longitude/latitude reference (decimal degrees):\n"
+    "  Tehran: 51.4°E, 35.7°N | Tel Aviv: 34.8°E, 32.1°N | Baghdad: 44.4°E, 33.3°N\n"
+    "  Riyadh: 46.7°E, 24.7°N | Strait of Hormuz: 56.5°E, 26.5°N\n"
+    "  Strait of Gibraltar: -5.3°E, 35.9°N | Suez Canal: 32.5°E, 30.0°N\n"
+    "  Moscow: 37.6°E, 55.7°N | Beijing: 116.4°E, 39.9°N | Washington DC: -77.0°E, 38.9°N\n"
+)
+
+
 def _model(provider: str, tier: str) -> str:
     """Resolve model name using the active provider (openrouter overrides if key is set)."""
     return _MODEL_MAP[_active_provider(provider)][tier]
@@ -315,6 +381,8 @@ def _model(provider: str, tier: str) -> str:
 def get_manim_fix_agent(provider: str = "google") -> Agent:
     return _make_agent(_model(provider, "flash"), ManimPatch, _MANIM_FIX_PROMPT, provider)
 
+def get_map_request_agent(provider: str = "google") -> Agent:
+    return _make_agent(_model(provider, "flash"), MapRequestList, _MAP_REQUEST_PROMPT, provider)
 
 def get_solver_agent(provider: str = "google") -> Agent:
     return _make_agent(_model(provider, "pro"), SolvedSteps, _SOLVER_PROMPT, provider)
@@ -344,15 +412,24 @@ _SCRIPT_REVIEW_PROMPT = (
     "Correction rules:\n"
     "  - Rewrite the 'script' field (Darija) so it narrates exactly what the visual_action shows.\n"
     "  - You may also fix the 'visual_action' if it is clearly wrong and the script is correct — "
-    "but prefer fixing the script. The visual action field doesn't have to be in arabic, you could keep it its original language as this is not spoken out with TTS \n"
+    "but prefer fixing the script. The visual_action field does not have to be in Arabic; "
+    "keep it in its original language as it is not spoken by TTS.\n"
     "  - Do NOT change segment ids or reorder segments.\n"
     "  - Do NOT merge or split segments.\n"
-    "  - Preserve all original script rules: Arabic letters only, heavy tashkeel, no Latin/symbols, "
-    "no mathematical notation — rewrite all formulas in Arabic words.\n"
+    "  - Preserve the mixed-script rules: Arabic script with heavy tashkeel for Darija words; "
+    "Latin/French spelling for words containing non-Arabic sounds (/p/, /v/, hard /g/) and for "
+    "technical/scientific terms of French or Latin origin (e.g., 'exponentielle', 'force', "
+    "'vitesse') — do NOT transliterate these into Arabic script. "
+    "No mathematical symbols or LaTeX; rewrite all equations in Arabic words.\n"
     "  - If a segment is already coherent, copy it unchanged.\n\n"
 
     "TTS QUALITY PASS ('script' field) — apply to every segment (even unchanged ones):\n"
-    "  - Add full, consistent tashkeel (diacritics) on every word.\n"
+    "  - Add full, consistent tashkeel (diacritics) on every Arabic word.\n"
+    "  - Fix words with missing or wrong letters (e.g., a root letter accidentally omitted, "
+    "wrong hamza placement, or a word spelled in fus7a form that differs in Darija).\n"
+    "  - DARIJA AUTHENTICITY: replace any word that is not genuinely used in Moroccan Darija "
+    "with its correct Darija equivalent. For example, fusha-only words should be replaced with "
+    "their Darija counterparts. If a common Darija word is misspelled or approximated, correct it.\n"
     "  - Replace phonetically complex or ambiguous Darija words with simpler equivalents "
     "that a TTS engine will pronounce naturally (e.g. avoid rare consonant clusters, "
     "unusual shadda combinations, or words with no clear vowel pattern).\n"

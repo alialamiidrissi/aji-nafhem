@@ -88,3 +88,20 @@ class BaseEducationalScene(Scene):
             print(f"[BaseScene] Warning: SVG not found: {svg_path}. Using placeholder.")
             return Square(**kwargs)
         return SVGMobject(str(svg_path), **kwargs)
+
+    def get_image(self, name, **kwargs):
+        """
+        Loads an ImageMobject (PNG/JPG) from this run's assets directory.
+        Falls back to a placeholder Rectangle if the file is missing.
+
+        Always call scale_to_fit_width() or scale_to_fit_height() immediately
+        after loading — ImageMobject default size depends on pixel dimensions.
+        Example (full frame):
+            map_img = self.get_image("middle_east_map.png")
+            map_img.scale_to_fit_width(config.frame_width)
+        """
+        img_path = self.asset_path / name
+        if not img_path.exists():
+            print(f"[BaseScene] Warning: image not found: {img_path}. Using placeholder.")
+            return Rectangle(width=config.frame_width, height=config.frame_height, **kwargs)
+        return ImageMobject(str(img_path), **kwargs)

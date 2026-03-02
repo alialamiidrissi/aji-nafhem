@@ -216,8 +216,11 @@ def _run_render_thread(run_dir: Path, log_q: queue.Queue, result_box: dict):
 
     log_q.put(f"\n[Render] Running: manim -qm {out_file} GeneratedEducationalScene\n")
 
+    media_dir = run_dir / "media"
     proc = subprocess.Popen(
-        [MANIM_BIN, "-qm", str(out_file), "GeneratedEducationalScene", "--disable_caching"],
+        [MANIM_BIN, "-qm", str(out_file), "GeneratedEducationalScene",
+         "--disable_caching", "--verbosity", "WARNING",
+         "--media_dir", str(media_dir)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -230,13 +233,22 @@ def _run_render_thread(run_dir: Path, log_q: queue.Queue, result_box: dict):
 
     proc.wait()
     if proc.returncode == 0:
-        video_path = PROJECT_DIR / "media/videos/generated_scene/720p30/GeneratedEducationalScene.mp4"
+        # Manim writes to <media_dir>/videos/<scene_stem>/720p30/<ClassName>.mp4
+        scene_stem = out_file.stem
+        video_path = media_dir / "videos" / scene_stem / "720p30" / "GeneratedEducationalScene.mp4"
         if video_path.exists():
             shutil.copy2(video_path, run_dir / "rendered_video.mp4")
             result_box["video_path"] = str(run_dir / "rendered_video.mp4")
+            # Remove partial movie files and the tmp render output — not needed after copy
+            partial_dir = video_path.parent / "partial_movie_files"
+            if partial_dir.exists():
+                shutil.rmtree(partial_dir)
+            video_path.unlink(missing_ok=True)
+            wav_path = video_path.with_suffix(".wav")
+            wav_path.unlink(missing_ok=True)
             log_q.put(f"\n✅ Render complete → {run_dir / 'rendered_video.mp4'}\n")
         else:
-            log_q.put("\n⚠️  Render succeeded but video file not found.\n")
+            log_q.put(f"\n⚠️  Render succeeded but video file not found at {video_path}.\n")
     else:
         log_q.put(f"\n❌ Render failed (exit code {proc.returncode}).\n")
 
@@ -333,7 +345,7 @@ def _stream_pipeline_and_render_generator(
     t2.join()
 
     if "video_path" in result_box2:
-        rel = Path(result_box2["video_path"]).relative_to(RUNS_DIR)
+        rel = Path(result_box2["video_path"]).resolve().relative_to(RUNS_DIR.resolve())
         yield f"event: video\ndata: /api/media/{rel}\n\n"
 
     yield "event: done\ndata: done\n\n"

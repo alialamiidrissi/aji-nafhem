@@ -68,9 +68,44 @@ class VisualAssets(BaseModel):
 
 
 class AssetMetadata(BaseModel):
-    name: str = Field(description="The unique filename for the svg, e.g., 'battery.svg'.")
-    semantic_content: str = Field(description="A description of what the SVG visually represents.")
-    usage_description: str = Field(description="Instructions on how this SVG should be used in the scene.")
+    name: str = Field(description="The unique filename for the asset, e.g., 'battery.svg' or 'middle_east_map.png'.")
+    asset_type: str = Field(default="svg", description="'svg' or 'image'. SVG assets are loaded with self.get_svg(name); image assets (PNG maps) are loaded with self.get_image(name).")
+    semantic_content: str = Field(description="A description of what the asset visually represents.")
+    usage_description: str = Field(description="Instructions on how this asset should be positioned or animated in the scene.")
+    viewbox: Optional[str] = Field(default=None, description="SVG only. The viewBox attribute of the SVG root element, e.g., '0 0 200 200'. Use this to understand the asset's coordinate space and aspect ratio for correct scaling and placement in Manim.")
+    pixel_dimensions: Optional[str] = Field(default=None, description="Image only. Pixel dimensions of the PNG, e.g., '2100x1350'. Use this to compute the correct scale when placing the image in a Manim scene whose frame is 1920×1080 (14.22×8 Manim units).")
+    map_metadata: Optional[dict] = Field(default=None, description=(
+        "Map assets only. Keys: 'highlight_countries' (name→hex color), "
+        "'markers' (list of {label, dot_color}), 'water_labels' (label→[lon,lat]), "
+        "'bbox' ([W,S,E,N]), 'title'. Use highlight_countries colors when adding "
+        "matching Manim labels over the map image."
+    ))
+
+
+class MapMarker(BaseModel):
+    lon: float = Field(description="Longitude of the marker point.")
+    lat: float = Field(description="Latitude of the marker point.")
+    label: str = Field(description="Short text label shown next to the dot, e.g., 'Tehran'.")
+    dot_color: str = Field(default="#FFD700", description="Hex color for the marker dot, e.g., '#C0392B'.")
+
+
+class MapRequest(BaseModel):
+    name: str = Field(description="Output filename for the PNG, e.g., 'middle_east_map.png'.")
+    bbox: List[float] = Field(description="Bounding box as [west, south, east, north] in decimal degrees, e.g., [22, 10, 68, 43].")
+    highlight_countries: dict = Field(default_factory=dict, description="Mapping of Natural Earth country name (exact English) to hex fill color, e.g., {'Iran': '#C0392B', 'Israel': '#2980B9'}.")
+    water_labels: dict = Field(default_factory=dict, description="Mapping of label text to [lon, lat] for seas/straits, e.g., {'Persian Gulf': [50.5, 27.5]}. Do NOT add a water label for a place that already has a marker.")
+    markers: List[MapMarker] = Field(default_factory=list, description="Specific point markers for cities, chokepoints, etc.")
+    title: str = Field(default="", description="Optional title shown at the top of the map.")
+
+
+class MapRequestList(BaseModel):
+    requests: List[MapRequest] = Field(
+        default_factory=list,
+        description=(
+            "List of map generation requests. Return an empty list if the scene does not require "
+            "any geographic map (i.e., the content is purely conceptual or mathematical)."
+        ),
+    )
 
 
 class ManimCode(BaseModel):

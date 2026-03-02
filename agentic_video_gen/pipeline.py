@@ -13,13 +13,16 @@ from agentic_video_gen.schemas import (
     ScriptSegments,
     VisualAssets,
     AssetMetadata,
+    MapRequestList,
     ManimCode,
 )
+from agentic_video_gen.map_gen import generate_map, PIXEL_WIDTH, PIXEL_HEIGHT
 from pydantic_ai import BinaryContent
 from agentic_video_gen.agents import (
     get_solver_agent,
     get_script_agent,
     get_script_review_agent,
+    get_map_request_agent,
     get_svg_agent,
     get_manim_agent,
     get_manim_fix_agent,
@@ -33,18 +36,20 @@ RUNS_DIR = Path("agentic_video_gen/runs")
 load_dotenv(os.path.join(os.getcwd(), ".env"))
 
 _CHECKPOINTS = {
-    1: ("checkpoint_step1_solved.json", SolvedSteps),
-    2: ("checkpoint_step2_script.json", ScriptSegments),
-    3: ("checkpoint_step3_svgs.json", VisualAssets),
-    4: ("checkpoint_step4_manim.json", ManimCode),
+    1:    ("checkpoint_step1_solved.json",  SolvedSteps),
+    2:    ("checkpoint_step2_script.json",  ScriptSegments),
+    "3a": ("checkpoint_step3a_maps.json",   MapRequestList),
+    3:    ("checkpoint_step3_svgs.json",    VisualAssets),
+    4:    ("checkpoint_step4_manim.json",   ManimCode),
 }
 
 
 _STEP_NAMES = {
-    1: "solver",
-    2: "script",
-    3: "svg",
-    4: "manim",
+    1:    "solver",
+    2:    "script",
+    "3a": "map_request",
+    3:    "svg",
+    4:    "manim",
     "manim_fix": "manim_fix",
 }
 
@@ -106,6 +111,32 @@ def _load_checkpoint(run_dir: Path, step: int):
         )
     with open(path, encoding="utf-8") as f:
         return model_cls.model_validate_json(f.read())
+
+
+def _map_request_to_metadata(req) -> AssetMetadata:
+    """Build AssetMetadata for a generated map PNG from its MapRequest."""
+    return AssetMetadata(
+        name=req.name,
+        asset_type="image",
+        semantic_content=(
+            f"Geographic map: {req.title or req.name}. "
+            f"Highlighted countries: {', '.join(req.highlight_countries.keys()) or 'none'}. "
+            f"Marked points: {', '.join(m.label for m in req.markers) or 'none'}."
+        ),
+        usage_description=(
+            "self.get_image(name), then scale_to_fit_width(config.frame_width) "
+            "for full-frame or *0.5 for half. Use map_metadata highlight_countries "
+            "colors when adding Manim text labels over the image."
+        ),
+        pixel_dimensions=f"{PIXEL_WIDTH}x{PIXEL_HEIGHT}",
+        map_metadata={
+            "highlight_countries": req.highlight_countries,
+            "markers": [{"label": m.label, "dot_color": m.dot_color, "lon": m.lon, "lat": m.lat} for m in req.markers],
+            "water_labels": list(req.water_labels.keys()),
+            "bbox": req.bbox,
+            "title": req.title,
+        },
+    )
 
 
 def _detect_completed_steps(run_dir: Path) -> list[int]:
@@ -253,16 +284,41 @@ def run_pipeline(
         print(f"  [{seg.id}] {seg.script[:40]}...")
 
     # --------------------------------------------------
-    # Node 3: SVG Asset Generator
+    # Node 3a: Map Request Agent (runs before SVG generator)
     # --------------------------------------------------
     if from_step <= 3:
+        print("\n[Step 3a] Checking for geographic map requirements...")
+        map_agent = get_map_request_agent(model_provider)
+        _prompt3a = (
+            f"Original Query: {query}\n\n"
+            f"Voiceover Script:\n{script.model_dump_json(indent=2)}"
+        )
+        map_result = map_agent.run_sync(_prompt3a)
+        map_requests: MapRequestList = map_result.output
+        _log_model_call(run_dir, "3a_maps", _prompt3a, map_result)
+
+        map_asset_metadata: list[AssetMetadata] = []
+        if map_requests.requests:
+            print(f"  Generating {len(map_requests.requests)} map(s)...")
+            for req in map_requests.requests:
+                generate_map(req, assets_dir / req.name)
+                map_asset_metadata.append(_map_request_to_metadata(req))
+        else:
+            print("  No maps needed for this scene.")
+        _save_checkpoint(run_dir, "3a", map_requests)
+
+        # --------------------------------------------------
+        # Node 3: SVG Asset Generator
+        # --------------------------------------------------
         print("\n[Step 3] Generating SVG assets...")
+        already_mapped = [m.name for m in map_asset_metadata]
         svg_agent = get_svg_agent(model_provider)
         _prompt3 = (
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
             f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}\n\n"
-            f"Voiceover Script:\n{script.model_dump_json(indent=2)}"
+            f"Voiceover Script:\n{script.model_dump_json(indent=2)}\n\n"
+            f"Already Generated Map Assets: {already_mapped if already_mapped else 'none'}"
         ) + _nudge(3)
         svg_result = svg_agent.run_sync(_prompt3)
         svgs: VisualAssets = svg_result.output
@@ -273,6 +329,8 @@ def run_pipeline(
         setup_assets_impl(assets_dir, assets_dict)
     else:
         print("\n[Step 3] Loading from checkpoint (skipped)...")
+        map_requests: MapRequestList = _load_checkpoint(run_dir, "3a")
+        map_asset_metadata = [_map_request_to_metadata(req) for req in map_requests.requests]
         svgs: VisualAssets = _load_checkpoint(run_dir, 3)
 
     print(f"  Generated {len(svgs.assets)} SVG assets.")
@@ -280,14 +338,22 @@ def run_pipeline(
         print(f"  [{asset.name}]: {asset.semantic_content[:60]}...")
 
     # Strip raw SVG from metadata before passing to Manim agent
-    asset_metadata_list = [
+    def _extract_viewbox(svg_code: str) -> str | None:
+        m = re.search(r'viewBox=["\']([^"\']+)["\']', svg_code, re.IGNORECASE)
+        return m.group(1) if m else None
+
+    svg_metadata = [
         AssetMetadata(
             name=a.name,
+            asset_type="svg",
             semantic_content=a.semantic_content,
             usage_description=a.usage_description,
+            viewbox=_extract_viewbox(a.raw_svg_code),
         ).model_dump()
         for a in svgs.assets
     ]
+    # Map PNG assets come first so the Manim agent sees them prominently
+    asset_metadata_list = [m.model_dump() for m in map_asset_metadata] + svg_metadata
 
     # --------------------------------------------------
     # Node 4: Manim Code Generator
@@ -413,7 +479,7 @@ def run_pipeline(
 
     print(f"\nDone! Run artifacts saved to: {run_dir}/")
     print("To render the video, run:")
-    print(f"MANIM_RUN_DIR={run_dir} manim -qm {out_file} GeneratedEducationalScene")
+    print(f"MANIM_RUN_DIR={run_dir} manim -qm {out_file} GeneratedEducationalScene --media_dir {run_dir}/media")
     return run_dir
 
 
