@@ -8,22 +8,42 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SUPPORTED_LANGUAGES } from "@/lib/api";
 
 interface PipelineOptionsProps {
   modelProvider: string;
   ttsProvider: string;
+  language: string;
   onModelChange: (v: string) => void;
   onTtsChange: (v: string) => void;
+  onLanguageChange: (v: string) => void;
 }
 
 export function PipelineOptions({
   modelProvider,
   ttsProvider,
+  language,
   onModelChange,
   onTtsChange,
+  onLanguageChange,
 }: PipelineOptionsProps) {
   return (
     <div className="flex gap-4 flex-wrap">
+      <div className="flex flex-col gap-1.5">
+        <Label>Language</Label>
+        <Select value={language} onValueChange={onLanguageChange}>
+          <SelectTrigger className="w-52">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SUPPORTED_LANGUAGES.map((l) => (
+              <SelectItem key={l.value} value={l.value}>
+                {l.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
       <div className="flex flex-col gap-1.5">
         <Label>Model Provider</Label>
         <Select value={modelProvider} onValueChange={onModelChange}>
@@ -32,6 +52,7 @@ export function PipelineOptions({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="google">Google (Gemini)</SelectItem>
+            <SelectItem value="openai">OpenAI</SelectItem>
             <SelectItem value="openrouter">OpenRouter</SelectItem>
           </SelectContent>
         </Select>

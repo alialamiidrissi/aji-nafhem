@@ -17,6 +17,7 @@ from agentic_video_gen.schemas import (
     ManimCode,
 )
 from agentic_video_gen.map_gen import generate_map, PIXEL_WIDTH, PIXEL_HEIGHT
+from agentic_video_gen.languages import get_language, DEFAULT_LANGUAGE
 from pydantic_ai import BinaryContent
 from agentic_video_gen.agents import (
     get_solver_agent,
@@ -173,6 +174,7 @@ def run_pipeline(
     force_fix_image: str | None = None,
     model_provider: str = "google",
     tts_provider: str = "local",
+    language: str = DEFAULT_LANGUAGE,
 ):
     """
     Runs the full educational video generation pipeline.
@@ -217,10 +219,14 @@ def run_pipeline(
     print(f"From step:  {from_step}")
     print("====================================")
 
+    lang_cfg = get_language(language)
+
     # Write run metadata as JSON so multi-line queries are handled correctly
     with open(run_dir / "run_info.json", "w", encoding="utf-8") as f:
-        json.dump({"run_id": run_id, "query": query, "audience": audience_level, "model_provider": model_provider}, f, ensure_ascii=False, indent=2)
+        json.dump({"run_id": run_id, "query": query, "audience": audience_level,
+                   "model_provider": model_provider, "language": language}, f, ensure_ascii=False, indent=2)
     print(f"Model provider: {model_provider}")
+    print(f"Language:       {lang_cfg.display_name}")
     _ctx_block = _scene_context_block(previous_scenes_context or [])
 
     def _nudge(step: int) -> str:
@@ -252,7 +258,7 @@ def run_pipeline(
     # --------------------------------------------------
     if from_step <= 2:
         print("\n[Step 2] Generating voiceover script...")
-        script_agent = get_script_agent(model_provider)
+        script_agent = get_script_agent(model_provider, lang_cfg)
         _prompt2 = (
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
@@ -263,7 +269,7 @@ def run_pipeline(
         _log_model_call(run_dir, 2, _prompt2, script_result)
 
         print("\n[Step 2 — review] Checking script/visual coherence...")
-        review_agent = get_script_review_agent(model_provider)
+        review_agent = get_script_review_agent(model_provider, lang_cfg)
         _prompt2_review = (
             f"Original Query: {query}\n\n"
             f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}\n\n"
@@ -362,7 +368,7 @@ def run_pipeline(
 
     if from_step <= 4:
         print("\n[Step 4] Generating Manim scene code...")
-        manim_agent = get_manim_agent(model_provider)
+        manim_agent = get_manim_agent(model_provider, lang_cfg)
         _prompt4 = (
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"

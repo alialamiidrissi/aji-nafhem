@@ -19,6 +19,7 @@ export function NewVideoTab() {
   const [audience, setAudience] = useState("high school student");
   const [modelProvider, setModelProvider] = useState("google");
   const [ttsProvider, setTtsProvider] = useState("local");
+  const [language, setLanguage] = useState("darija");
   const { logs, running, videoUrl, error, start, stop } = useSSE();
 
   const handleGenerate = () => {
@@ -28,6 +29,7 @@ export function NewVideoTab() {
       audience,
       model_provider: modelProvider,
       tts_provider: ttsProvider,
+      language,
     });
   };
 
@@ -63,8 +65,10 @@ export function NewVideoTab() {
           <PipelineOptions
             modelProvider={modelProvider}
             ttsProvider={ttsProvider}
+            language={language}
             onModelChange={setModelProvider}
             onTtsChange={setTtsProvider}
+            onLanguageChange={setLanguage}
           />
 
           <div className="flex gap-3 pt-1">

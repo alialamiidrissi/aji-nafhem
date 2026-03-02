@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import ReactMarkdown from "react-markdown";
+import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -65,7 +65,7 @@ function SceneCard({ scene, projectId, onRefresh }: {
         </div>
       </CardHeader>
       <CardContent className="space-y-3 pt-0">
-        <p className="text-sm text-muted-foreground leading-relaxed">{scene.query}</p>
+        <Markdown className="prose prose-sm prose-invert max-w-none text-muted-foreground leading-relaxed">{scene.query}</Markdown>
 
         <div className="flex flex-wrap gap-1.5">
           {steps.map((s) => (
@@ -88,9 +88,7 @@ function SceneCard({ scene, projectId, onRefresh }: {
                   {((scene.solver as { steps?: Array<{ step_number: number; concept: string; description: string }> }).steps ?? []).map((st) => (
                     <li key={st.step_number}>
                       <strong>{st.concept}</strong>:{" "}
-                      <span className="prose prose-xs prose-invert max-w-none inline">
-                        <ReactMarkdown>{st.description}</ReactMarkdown>
-                      </span>
+                      <Markdown className="prose prose-xs prose-invert max-w-none">{st.description}</Markdown>
                     </li>
                   ))}
                 </ol>
@@ -109,12 +107,10 @@ function SceneCard({ scene, projectId, onRefresh }: {
                 <ol className="text-xs space-y-3 list-decimal list-inside">
                   {((scene.script as { segments?: Array<{ id: string; script: string; visual_action: string }> }).segments ?? []).map((seg) => (
                     <li key={seg.id}>
-                      <span className="prose prose-xs prose-invert max-w-none inline">
-                        <ReactMarkdown>{seg.script}</ReactMarkdown>
-                      </span>
-                      <p className="italic text-muted-foreground ml-4 mt-0.5">
-                        ↪ <span className="prose prose-xs prose-invert max-w-none"><ReactMarkdown>{seg.visual_action}</ReactMarkdown></span>
-                      </p>
+                      <Markdown className="prose prose-xs prose-invert max-w-none">{seg.script}</Markdown>
+                      <div className="italic text-muted-foreground ml-4 mt-0.5">
+                        ↪ <Markdown className="prose prose-xs prose-invert max-w-none inline-block">{seg.visual_action}</Markdown>
+                      </div>
                     </li>
                   ))}
                 </ol>
@@ -150,8 +146,12 @@ export function ProjectsTab() {
   const [runFromStep, setRunFromStep] = useState("1");
   const [runNudges, setRunNudges] = useState({ 1: "", 2: "", 3: "", 4: "" });
   const [runForceFix, setRunForceFix] = useState("");
+  const [runForceFixImagePath, setRunForceFixImagePath] = useState<string | null>(null);
+  const [runForceFixImagePreview, setRunForceFixImagePreview] = useState<string | null>(null);
+  const [runUploadingImage, setRunUploadingImage] = useState(false);
   const [runModelProvider, setRunModelProvider] = useState("google");
   const [runTtsProvider, setRunTtsProvider] = useState("local");
+  const [runLanguage, setRunLanguage] = useState("darija");
 
   const { logs, running, videoUrl, error, start, stop } = useSSE();
 
@@ -224,9 +224,24 @@ export function ProjectsTab() {
       nudge_3: nudges[3] ?? "",
       nudge_4: nudges[4] ?? "",
       force_fix_prompt: runForceFix,
+      force_fix_image_path: runForceFixImagePath,
       model_provider: runModelProvider,
       tts_provider: runTtsProvider,
+      language: runLanguage,
     });
+  };
+
+  const handleRunForceFixImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setRunForceFixImagePreview(URL.createObjectURL(file));
+    setRunUploadingImage(true);
+    try {
+      const path = await api.uploadFile(file);
+      setRunForceFixImagePath(path);
+    } finally {
+      setRunUploadingImage(false);
+    }
   };
 
   const handleStitch = () => {
@@ -442,13 +457,37 @@ export function ProjectsTab() {
                 <AccordionItem value="fix">
                   <AccordionTrigger className="text-sm">Force-fix prompt (optional)</AccordionTrigger>
                   <AccordionContent>
-                    <Textarea
-                      rows={3}
-                      value={runForceFix}
-                      onChange={(e) => setRunForceFix(e.target.value)}
-                      className="mt-2 resize-none"
-                      placeholder="Describe what to fix in the Manim scene…"
-                    />
+                    <div className="space-y-3 mt-2">
+                      <Textarea
+                        rows={3}
+                        value={runForceFix}
+                        onChange={(e) => setRunForceFix(e.target.value)}
+                        className="resize-none"
+                        placeholder="Describe what to fix in the Manim scene…"
+                      />
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-muted-foreground">Screenshot of the issue (optional)</Label>
+                        <Input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleRunForceFixImageUpload}
+                          disabled={runUploadingImage}
+                          className="text-xs cursor-pointer"
+                        />
+                        {runUploadingImage && <p className="text-xs text-muted-foreground">Uploading…</p>}
+                        {runForceFixImagePreview && !runUploadingImage && (
+                          <div className="relative">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={runForceFixImagePreview} alt="Fix screenshot" className="max-h-48 rounded border border-zinc-700 object-contain" />
+                            <button
+                              type="button"
+                              onClick={() => { setRunForceFixImagePreview(null); setRunForceFixImagePath(null); }}
+                              className="absolute top-1 right-1 bg-zinc-800 text-xs px-1.5 py-0.5 rounded hover:bg-zinc-700"
+                            >✕</button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </AccordionContent>
                 </AccordionItem>
               </Accordion>
@@ -456,8 +495,10 @@ export function ProjectsTab() {
               <PipelineOptions
                 modelProvider={runModelProvider}
                 ttsProvider={runTtsProvider}
+                language={runLanguage}
                 onModelChange={setRunModelProvider}
                 onTtsChange={setRunTtsProvider}
+                onLanguageChange={setRunLanguage}
               />
 
               <div className="flex gap-3 flex-wrap">

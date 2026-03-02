@@ -11,11 +11,19 @@ export interface RunDetail {
   run_id: string;
   query: string;
   audience: string;
+  language: string;
   checkpoints: Record<number, { name: string; done: boolean }>;
   has_scene: boolean;
   has_video: boolean;
   video_url: string | null;
 }
+
+export const SUPPORTED_LANGUAGES: { value: string; label: string }[] = [
+  { value: "darija", label: "Moroccan Darija" },
+  { value: "msa", label: "Modern Standard Arabic" },
+  { value: "french", label: "French" },
+  { value: "english", label: "English" },
+];
 
 export interface Project {
   project_id: string;
@@ -115,6 +123,14 @@ export const api = {
   async getImportableSources(): Promise<ImportableSource[]> {
     const res = await fetch(`${API_BASE}/api/importable-sources`);
     return res.json();
+  },
+
+  async uploadFile(file: File): Promise<string> {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: form });
+    const data = await res.json();
+    return data.path as string;
   },
 
   mediaUrl(path: string): string {

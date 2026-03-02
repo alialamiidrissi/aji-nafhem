@@ -35,8 +35,12 @@ export function ResumeRunTab() {
   const [copyRun, setCopyRun] = useState(false);
   const [nudges, setNudges] = useState({ 1: "", 2: "", 3: "", 4: "" });
   const [forceFix, setForceFix] = useState("");
+  const [forceFixImagePath, setForceFixImagePath] = useState<string | null>(null);
+  const [forceFixImagePreview, setForceFixImagePreview] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const [modelProvider, setModelProvider] = useState("google");
   const [ttsProvider, setTtsProvider] = useState("local");
+  const [language, setLanguage] = useState("darija");
   const [loadingRuns, setLoadingRuns] = useState(false);
   const { logs, running, videoUrl, error, start, stop } = useSSE();
 
@@ -51,7 +55,10 @@ export function ResumeRunTab() {
 
   useEffect(() => {
     if (!selectedRunId) { setRunDetail(null); return; }
-    api.getRun(selectedRunId).then(setRunDetail).catch(() => setRunDetail(null));
+    api.getRun(selectedRunId).then((detail) => {
+      setRunDetail(detail);
+      if (detail.language) setLanguage(detail.language);
+    }).catch(() => setRunDetail(null));
   }, [selectedRunId]);
 
   const handleResume = () => {
@@ -65,9 +72,24 @@ export function ResumeRunTab() {
       nudge_3: nudges[3],
       nudge_4: nudges[4],
       force_fix_prompt: forceFix,
+      force_fix_image_path: forceFixImagePath,
       model_provider: modelProvider,
       tts_provider: ttsProvider,
+      language,
     });
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setForceFixImagePreview(URL.createObjectURL(file));
+    setUploadingImage(true);
+    try {
+      const path = await api.uploadFile(file);
+      setForceFixImagePath(path);
+    } finally {
+      setUploadingImage(false);
+    }
   };
 
   return (
@@ -110,7 +132,7 @@ export function ResumeRunTab() {
                 <div className="prose prose-sm prose-invert max-w-none">
                   <ReactMarkdown>{runDetail.query}</ReactMarkdown>
                 </div>
-                <p className="text-xs text-muted-foreground">Audience: {runDetail.audience}</p>
+                <p className="text-xs text-muted-foreground">Audience: {runDetail.audience} · Language: {runDetail.language ?? "darija"}</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {Object.entries(runDetail.checkpoints).map(([step, cp]) => (
@@ -188,13 +210,37 @@ export function ResumeRunTab() {
               <AccordionItem value="fix">
                 <AccordionTrigger className="text-sm">Force-fix prompt (optional)</AccordionTrigger>
                 <AccordionContent>
-                  <Textarea
-                    placeholder="Describe what to fix in the Manim scene…"
-                    rows={3}
-                    value={forceFix}
-                    onChange={(e) => setForceFix(e.target.value)}
-                    className="mt-2 resize-none"
-                  />
+                  <div className="space-y-3 mt-2">
+                    <Textarea
+                      placeholder="Describe what to fix in the Manim scene…"
+                      rows={3}
+                      value={forceFix}
+                      onChange={(e) => setForceFix(e.target.value)}
+                      className="resize-none"
+                    />
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">Screenshot of the issue (optional)</Label>
+                      <Input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleImageUpload}
+                        disabled={uploadingImage}
+                        className="text-xs cursor-pointer"
+                      />
+                      {uploadingImage && <p className="text-xs text-muted-foreground">Uploading…</p>}
+                      {forceFixImagePreview && !uploadingImage && (
+                        <div className="relative">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={forceFixImagePreview} alt="Fix screenshot" className="max-h-48 rounded border border-zinc-700 object-contain" />
+                          <button
+                            type="button"
+                            onClick={() => { setForceFixImagePreview(null); setForceFixImagePath(null); }}
+                            className="absolute top-1 right-1 bg-zinc-800 text-xs px-1.5 py-0.5 rounded hover:bg-zinc-700"
+                          >✕</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
@@ -202,8 +248,10 @@ export function ResumeRunTab() {
             <PipelineOptions
               modelProvider={modelProvider}
               ttsProvider={ttsProvider}
+              language={language}
               onModelChange={setModelProvider}
               onTtsChange={setTtsProvider}
+              onLanguageChange={setLanguage}
             />
 
             <div className="flex gap-3 pt-1">
