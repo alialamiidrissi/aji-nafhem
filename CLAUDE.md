@@ -9,6 +9,8 @@ This file tracks rules, preferences, and corrections provided by the user to ens
 ## 2. Environment & Package Management
 - **Environment**: Always execute commands within the user's requested Conda environment (e.g., `audio_tts`).
 - **Package Manager**: Use `uv` (or `uv pip`) for installing python packages instead of standard `pip` for speed and consistency.
+- **Frontend Package Manager**: Use `pnpm` for Node.js/Next.js packages (not `npm` or `yarn`).
+- **Running Python in the conda env**: The shell in this environment cannot run `conda activate`. Use the env's Python binary directly: `/Users/aalamiid/miniconda3/envs/audio_tts/bin/python <script>`. Do NOT use `conda activate` or `source` conda init scripts.
 
 ## 3. Architecture Context
 - **Graphs over ReAct**: Prefer Directed acyclic sequential graphs (simple python functions passing Pydantic models) instead of ReAct conversational loops for linear generation tasks like video creation.

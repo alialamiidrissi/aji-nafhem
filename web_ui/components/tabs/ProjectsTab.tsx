@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -83,9 +84,14 @@ function SceneCard({ scene, projectId, onRefresh }: {
             <AccordionItem value="solver">
               <AccordionTrigger className="text-xs py-2">Solver Result — {(scene.solver as { topic?: string }).topic ?? "—"}</AccordionTrigger>
               <AccordionContent>
-                <ol className="text-xs space-y-1 list-decimal list-inside">
+                <ol className="text-xs space-y-2 list-decimal list-inside">
                   {((scene.solver as { steps?: Array<{ step_number: number; concept: string; description: string }> }).steps ?? []).map((st) => (
-                    <li key={st.step_number}><strong>{st.concept}</strong>: {st.description}</li>
+                    <li key={st.step_number}>
+                      <strong>{st.concept}</strong>:{" "}
+                      <span className="prose prose-xs prose-invert max-w-none inline">
+                        <ReactMarkdown>{st.description}</ReactMarkdown>
+                      </span>
+                    </li>
                   ))}
                 </ol>
               </AccordionContent>
@@ -100,11 +106,15 @@ function SceneCard({ scene, projectId, onRefresh }: {
                 Voiceover Script ({((scene.script as { segments?: unknown[] }).segments ?? []).length} segments)
               </AccordionTrigger>
               <AccordionContent>
-                <ol className="text-xs space-y-2 list-decimal list-inside">
+                <ol className="text-xs space-y-3 list-decimal list-inside">
                   {((scene.script as { segments?: Array<{ id: string; script: string; visual_action: string }> }).segments ?? []).map((seg) => (
                     <li key={seg.id}>
-                      <span>{seg.script}</span>
-                      <p className="italic text-muted-foreground ml-4">↪ {seg.visual_action}</p>
+                      <span className="prose prose-xs prose-invert max-w-none inline">
+                        <ReactMarkdown>{seg.script}</ReactMarkdown>
+                      </span>
+                      <p className="italic text-muted-foreground ml-4 mt-0.5">
+                        ↪ <span className="prose prose-xs prose-invert max-w-none"><ReactMarkdown>{seg.visual_action}</ReactMarkdown></span>
+                      </p>
                     </li>
                   ))}
                 </ol>

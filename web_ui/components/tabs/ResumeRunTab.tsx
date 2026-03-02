@@ -23,6 +23,7 @@ import { PipelineOptions } from "@/components/PipelineOptions";
 import { useSSE } from "@/hooks/useSSE";
 import { api, Run, RunDetail, STEP_LABELS } from "@/lib/api";
 import { Loader2, Play, Square, RefreshCw } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 
 const API_BASE = "http://localhost:8080";
 
@@ -94,7 +95,7 @@ export function ResumeRunTab() {
                   <SelectItem key={r.run_id} value={r.run_id}>
                     <span className="font-mono text-xs text-muted-foreground">{r.run_id.slice(0, 8)}…</span>
                     {" — "}
-                    <span>{r.query_preview}</span>
+                    <span>{r.query_preview.replace(/#{1,6}\s/g, "").replace(/\*\*/g, "")}</span>
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -106,7 +107,9 @@ export function ResumeRunTab() {
             <div className="rounded-lg border p-4 space-y-3 bg-muted/30">
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground font-mono">{runDetail.run_id}</p>
-                <p className="text-sm font-medium">{runDetail.query}</p>
+                <div className="prose prose-sm prose-invert max-w-none">
+                  <ReactMarkdown>{runDetail.query}</ReactMarkdown>
+                </div>
                 <p className="text-xs text-muted-foreground">Audience: {runDetail.audience}</p>
               </div>
               <div className="flex flex-wrap gap-2">
