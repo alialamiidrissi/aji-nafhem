@@ -37,20 +37,20 @@ RUNS_DIR = Path("agentic_video_gen/runs")
 load_dotenv(os.path.join(os.getcwd(), ".env"))
 
 _CHECKPOINTS = {
-    1:    ("checkpoint_step1_solved.json",  SolvedSteps),
-    2:    ("checkpoint_step2_script.json",  ScriptSegments),
-    "3a": ("checkpoint_step3a_maps.json",   MapRequestList),
-    3:    ("checkpoint_step3_svgs.json",    VisualAssets),
-    4:    ("checkpoint_step4_manim.json",   ManimCode),
+    1: ("checkpoint_step1_solved.json",  SolvedSteps),
+    2: ("checkpoint_step2_script.json",  ScriptSegments),
+    3: ("checkpoint_step3a_maps.json",   MapRequestList),
+    4: ("checkpoint_step3_svgs.json",    VisualAssets),
+    5: ("checkpoint_step4_manim.json",   ManimCode),
 }
 
 
 _STEP_NAMES = {
-    1:    "solver",
-    2:    "script",
-    "3a": "map_request",
-    3:    "svg",
-    4:    "manim",
+    1: "solver",
+    2: "script",
+    3: "map_request",
+    4: "svg",
+    5: "manim",
     "manim_fix": "manim_fix",
 }
 
@@ -290,18 +290,18 @@ def run_pipeline(
         print(f"  [{seg.id}] {seg.script[:40]}...")
 
     # --------------------------------------------------
-    # Node 3a: Map Request Agent (runs before SVG generator)
+    # Node 3: Map Request Agent
     # --------------------------------------------------
     if from_step <= 3:
-        print("\n[Step 3a] Checking for geographic map requirements...")
+        print("\n[Step 3] Checking for geographic map requirements...")
         map_agent = get_map_request_agent(model_provider)
-        _prompt3a = (
+        _prompt3 = (
             f"Original Query: {query}\n\n"
             f"Voiceover Script:\n{script.model_dump_json(indent=2)}"
-        )
-        map_result = map_agent.run_sync(_prompt3a)
+        ) + _nudge(3)
+        map_result = map_agent.run_sync(_prompt3)
         map_requests: MapRequestList = map_result.output
-        _log_model_call(run_dir, "3a_maps", _prompt3a, map_result)
+        _log_model_call(run_dir, 3, _prompt3, map_result)
 
         map_asset_metadata: list[AssetMetadata] = []
         if map_requests.requests:
@@ -311,33 +311,36 @@ def run_pipeline(
                 map_asset_metadata.append(_map_request_to_metadata(req))
         else:
             print("  No maps needed for this scene.")
-        _save_checkpoint(run_dir, "3a", map_requests)
+        _save_checkpoint(run_dir, 3, map_requests)
+    else:
+        print("\n[Step 3] Loading from checkpoint (skipped)...")
+        map_requests: MapRequestList = _load_checkpoint(run_dir, 3)
+        map_asset_metadata = [_map_request_to_metadata(req) for req in map_requests.requests]
 
-        # --------------------------------------------------
-        # Node 3: SVG Asset Generator
-        # --------------------------------------------------
-        print("\n[Step 3] Generating SVG assets...")
+    # --------------------------------------------------
+    # Node 4: SVG Asset Generator
+    # --------------------------------------------------
+    if from_step <= 4:
+        print("\n[Step 4] Generating SVG assets...")
         already_mapped = [m.name for m in map_asset_metadata]
         svg_agent = get_svg_agent(model_provider)
-        _prompt3 = (
+        _prompt4svg = (
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
             f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}\n\n"
             f"Voiceover Script:\n{script.model_dump_json(indent=2)}\n\n"
             f"Already Generated Map Assets: {already_mapped if already_mapped else 'none'}"
-        ) + _nudge(3)
-        svg_result = svg_agent.run_sync(_prompt3)
+        ) + _nudge(4)
+        svg_result = svg_agent.run_sync(_prompt4svg)
         svgs: VisualAssets = svg_result.output
-        _log_model_call(run_dir, 3, _prompt3, svg_result)
-        _save_checkpoint(run_dir, 3, svgs)
+        _log_model_call(run_dir, 4, _prompt4svg, svg_result)
+        _save_checkpoint(run_dir, 4, svgs)
 
         assets_dict = {asset.name: asset.raw_svg_code for asset in svgs.assets}
         setup_assets_impl(assets_dir, assets_dict)
     else:
-        print("\n[Step 3] Loading from checkpoint (skipped)...")
-        map_requests: MapRequestList = _load_checkpoint(run_dir, "3a")
-        map_asset_metadata = [_map_request_to_metadata(req) for req in map_requests.requests]
-        svgs: VisualAssets = _load_checkpoint(run_dir, 3)
+        print("\n[Step 4] Loading from checkpoint (skipped)...")
+        svgs: VisualAssets = _load_checkpoint(run_dir, 4)
 
     print(f"  Generated {len(svgs.assets)} SVG assets.")
     for asset in svgs.assets:
@@ -362,14 +365,14 @@ def run_pipeline(
     asset_metadata_list = [m.model_dump() for m in map_asset_metadata] + svg_metadata
 
     # --------------------------------------------------
-    # Node 4: Manim Code Generator
+    # Node 5: Manim Code Generator
     # --------------------------------------------------
     out_file = run_dir / "generated_scene.py"
 
-    if from_step <= 4:
-        print("\n[Step 4] Generating Manim scene code...")
+    if from_step <= 5:
+        print("\n[Step 5] Generating Manim scene code...")
         manim_agent = get_manim_agent(model_provider, lang_cfg)
-        _prompt4 = (
+        _prompt5 = (
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
             f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}\n\n"
@@ -378,21 +381,21 @@ def run_pipeline(
             f"Available SVG Assets (load with self.get_svg(name)):\n"
             f"{asset_metadata_list}\n\n"
             f"Run directory (pass as run_dir to super().__init__ or handle via env): {run_dir}"
-        ) + _ctx_block + _nudge(4)
-        manim_result = manim_agent.run_sync(_prompt4)
+        ) + _ctx_block + _nudge(5)
+        manim_result = manim_agent.run_sync(_prompt5)
         manim_code: ManimCode = manim_result.output
-        _log_model_call(run_dir, 4, _prompt4, manim_result)
-        _save_checkpoint(run_dir, 4, manim_code)
+        _log_model_call(run_dir, 5, _prompt5, manim_result)
+        _save_checkpoint(run_dir, 5, manim_code)
 
         code_content = extract_code_fence(manim_code.python_code)
         with open(out_file, "w", encoding="utf-8") as f:
             f.write(code_content)
         print(f"  Scene code written to {out_file}.")
     else:
-        print("\n[Step 4] Loading from checkpoint (skipped)...")
+        print("\n[Step 5] Loading from checkpoint (skipped)...")
         if not out_file.exists():
             # Reconstruct from checkpoint
-            manim_code: ManimCode = _load_checkpoint(run_dir, 4)
+            manim_code: ManimCode = _load_checkpoint(run_dir, 5)
             code_content = extract_code_fence(manim_code.python_code)
             with open(out_file, "w", encoding="utf-8") as f:
                 f.write(code_content)
@@ -401,10 +404,10 @@ def run_pipeline(
 
 
     # --------------------------------------------------
-    # Node 5: Compilation Validation Loop (self-correcting)
+    # Node 6: Compilation Validation Loop (self-correcting)
     # --------------------------------------------------
-    if from_step <= 5:
-        print("\n[Step 5] Compiling Manim scene (with self-correction)...")
+    if from_step <= 6:
+        print("\n[Step 6] Compiling Manim scene (with self-correction)...")
         manim_bin = "/Users/aalamiid/miniconda3/envs/audio_tts/bin/manim"
         max_retries = 3
         run_env = {**os.environ, "MANIM_RUN_DIR": str(run_dir.resolve())}

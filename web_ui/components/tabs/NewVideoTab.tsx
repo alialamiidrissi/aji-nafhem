@@ -9,7 +9,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LogStream } from "@/components/LogStream";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { PipelineOptions } from "@/components/PipelineOptions";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useSSE } from "@/hooks/useSSE";
+import { STEP_LABELS } from "@/lib/api";
 import { Loader2, Play, Square } from "lucide-react";
 
 const API_BASE = "http://localhost:8080";
@@ -20,6 +22,7 @@ export function NewVideoTab() {
   const [modelProvider, setModelProvider] = useState("google");
   const [ttsProvider, setTtsProvider] = useState("local");
   const [language, setLanguage] = useState("darija");
+  const [nudges, setNudges] = useState<Record<number, string>>({ 1: "", 2: "", 3: "", 4: "", 5: "" });
   const { logs, running, videoUrl, error, start, stop } = useSSE();
 
   const handleGenerate = () => {
@@ -30,6 +33,11 @@ export function NewVideoTab() {
       model_provider: modelProvider,
       tts_provider: ttsProvider,
       language,
+      nudge_1: nudges[1],
+      nudge_2: nudges[2],
+      nudge_3: nudges[3],
+      nudge_4: nudges[4],
+      nudge_5: nudges[5],
     });
   };
 
@@ -70,6 +78,26 @@ export function NewVideoTab() {
             onTtsChange={setTtsProvider}
             onLanguageChange={setLanguage}
           />
+
+          <Accordion type="single" collapsible>
+            <AccordionItem value="nudges">
+              <AccordionTrigger className="text-sm">Per-step nudges (optional)</AccordionTrigger>
+              <AccordionContent>
+                <div className="space-y-3 pt-2">
+                  {([1, 2, 3, 4, 5] as const).map((step) => (
+                    <div key={step} className="space-y-1.5">
+                      <Label className="text-xs">Step {step} — {STEP_LABELS[step]}</Label>
+                      <Input
+                        placeholder={`Nudge for step ${step}…`}
+                        value={nudges[step]}
+                        onChange={(e) => setNudges((n) => ({ ...n, [step]: e.target.value }))}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
 
           <div className="flex gap-3 pt-1">
             <Button

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -33,11 +33,12 @@ export function ResumeRunTab() {
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [fromStep, setFromStep] = useState("1");
   const [copyRun, setCopyRun] = useState(false);
-  const [nudges, setNudges] = useState({ 1: "", 2: "", 3: "", 4: "" });
+  const [nudges, setNudges] = useState<Record<number, string>>({ 1: "", 2: "", 3: "", 4: "", 5: "" });
   const [forceFix, setForceFix] = useState("");
   const [forceFixImagePath, setForceFixImagePath] = useState<string | null>(null);
   const [forceFixImagePreview, setForceFixImagePreview] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const [modelProvider, setModelProvider] = useState("google");
   const [ttsProvider, setTtsProvider] = useState("local");
   const [language, setLanguage] = useState("darija");
@@ -71,6 +72,7 @@ export function ResumeRunTab() {
       nudge_2: nudges[2],
       nudge_3: nudges[3],
       nudge_4: nudges[4],
+      nudge_5: nudges[5],
       force_fix_prompt: forceFix,
       force_fix_image_path: forceFixImagePath,
       model_provider: modelProvider,
@@ -194,7 +196,7 @@ export function ResumeRunTab() {
                 <AccordionTrigger className="text-sm">Per-step nudges (optional)</AccordionTrigger>
                 <AccordionContent>
                   <div className="space-y-3 pt-2">
-                    {([1, 2, 3, 4] as const).map((step) => (
+                    {([1, 2, 3, 4, 5] as const).map((step) => (
                       <div key={step} className="space-y-1.5">
                         <Label className="text-xs">Step {step} — {STEP_LABELS[step]}</Label>
                         <Input
@@ -221,6 +223,7 @@ export function ResumeRunTab() {
                     <div className="space-y-1.5">
                       <Label className="text-xs text-muted-foreground">Screenshot of the issue (optional)</Label>
                       <Input
+                        ref={imageInputRef}
                         type="file"
                         accept="image/*"
                         onChange={handleImageUpload}
@@ -234,7 +237,7 @@ export function ResumeRunTab() {
                           <img src={forceFixImagePreview} alt="Fix screenshot" className="max-h-48 rounded border border-zinc-700 object-contain" />
                           <button
                             type="button"
-                            onClick={() => { setForceFixImagePreview(null); setForceFixImagePath(null); }}
+                            onClick={() => { setForceFixImagePreview(null); setForceFixImagePath(null); if (imageInputRef.current) imageInputRef.current.value = ""; }}
                             className="absolute top-1 right-1 bg-zinc-800 text-xs px-1.5 py-0.5 rounded hover:bg-zinc-700"
                           >✕</button>
                         </div>
