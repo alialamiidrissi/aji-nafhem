@@ -12,7 +12,7 @@ export interface RunDetail {
   query: string;
   audience: string;
   language: string;
-  checkpoints: Record<number, { name: string; done: boolean }>;
+  checkpoints: Record<string, { name: string; done: boolean }>;
   has_scene: boolean;
   has_video: boolean;
   video_url: string | null;
@@ -27,6 +27,7 @@ export const SUPPORTED_LANGUAGES: { value: string; label: string }[] = [
 
 export interface Project {
   project_id: string;
+  name: string;
   audience: string;
   carry_solver_context: boolean;
   scene_count: number;
@@ -46,6 +47,7 @@ export interface SceneEntry {
 
 export interface ProjectDetail {
   project_id: string;
+  name: string;
   audience: string;
   carry_solver_context: boolean;
   scenes: SceneEntry[];
@@ -76,6 +78,18 @@ export const api = {
   async getProject(projectId: string): Promise<ProjectDetail> {
     const res = await fetch(`${API_BASE}/api/projects/${projectId}`);
     return res.json();
+  },
+
+  async deleteProject(projectId: string): Promise<void> {
+    await fetch(`${API_BASE}/api/projects/${projectId}`, { method: "DELETE" });
+  },
+
+  async renameProject(projectId: string, name: string): Promise<void> {
+    await fetch(`${API_BASE}/api/projects/${projectId}/rename`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
   },
 
   async newProject(audience: string, carry_solver_context: boolean): Promise<{ project_id: string }> {
@@ -141,7 +155,8 @@ export const api = {
 export const STEP_LABELS: Record<number, string> = {
   1: "Analytical Solver",
   2: "Script & TTS",
-  3: "SVG Assets",
-  4: "Manim Code",
-  5: "Compile & Fix",
+  3: "Map Generator",
+  4: "SVG Assets",
+  5: "Manim Code",
+  6: "Compile & Fix",
 };

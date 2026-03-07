@@ -1,11 +1,12 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { HomeTab } from "@/components/tabs/HomeTab";
 import { NewVideoTab } from "@/components/tabs/NewVideoTab";
 import { ResumeRunTab } from "@/components/tabs/ResumeRunTab";
 import { ProjectsTab } from "@/components/tabs/ProjectsTab";
 import { Separator } from "@/components/ui/separator";
-import { Video, RotateCcw, FolderOpen } from "lucide-react";
+import { Home as HomeIcon, Video, RotateCcw, FolderOpen } from "lucide-react";
 
 export default function Home() {
   return (
@@ -25,8 +26,12 @@ export default function Home() {
 
       {/* Main content */}
       <main className="max-w-5xl mx-auto px-4 py-8">
-        <Tabs defaultValue="new" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3 h-11">
+        <Tabs defaultValue="home" className="space-y-6">
+          <TabsList className="grid w-full grid-cols-4 h-11">
+            <TabsTrigger value="home" className="gap-2 text-sm">
+              <HomeIcon className="h-4 w-4" />
+              Home
+            </TabsTrigger>
             <TabsTrigger value="new" className="gap-2 text-sm">
               <Video className="h-4 w-4" />
               New Video
@@ -40,6 +45,10 @@ export default function Home() {
               Projects
             </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="home" className="mt-6">
+            <HomeTab />
+          </TabsContent>
 
           <TabsContent value="new" className="mt-6">
             <NewVideoTab />

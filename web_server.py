@@ -7,18 +7,33 @@ import sys
 import json
 import uuid
 import shutil
+import logging
 import queue
 import threading
 import subprocess
 from pathlib import Path
 from typing import Generator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
+
+from agentic_video_gen.pipeline import run_pipeline
+from agentic_video_gen.stitch import stitch_project_videos
+from agentic_video_gen.projects import (
+    create_project,
+    add_native_scene,
+    import_scene as _import_scene,
+    remove_scene as _remove_scene,
+    fork_project as _fork_project,
+    run_project_scene,
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("uvicorn.error")
+
 
 load_dotenv()
 
@@ -31,11 +46,26 @@ DEFAULT_AUDIENCE = "high school student"
 _CHECKPOINT_FILES = {
     1: "checkpoint_step1_solved.json",
     2: "checkpoint_step2_script.json",
-    3: "checkpoint_step3_svgs.json",
-    4: "checkpoint_step4_manim.json",
+    3: "checkpoint_step3a_maps.json",
+    4: "checkpoint_step3_svgs.json",
+    5: "checkpoint_step4_manim.json",
 }
 
 app = FastAPI(title="Aji Nafhem API")
+
+@app.middleware("http")
+async def log_json(request: Request, call_next):
+    if request.headers.get("content-type") == "application/json":
+        body = await request.body()
+        print("JSON Body:", body.decode())
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        request = Request(request.scope, receive)
+
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,6 +85,12 @@ class GenerateRequest(BaseModel):
     audience: str = DEFAULT_AUDIENCE
     model_provider: str = "google"
     tts_provider: str = "local"
+    language: str = "darija"
+    nudge_1: str = ""
+    nudge_2: str = ""
+    nudge_3: str = ""
+    nudge_4: str = ""
+    nudge_5: str = ""
 
 
 class ResumeRequest(BaseModel):
@@ -65,15 +101,21 @@ class ResumeRequest(BaseModel):
     nudge_2: str = ""
     nudge_3: str = ""
     nudge_4: str = ""
+    nudge_5: str = ""
     force_fix_prompt: str = ""
     force_fix_image_path: str | None = None
     model_provider: str = "google"
     tts_provider: str = "local"
+    language: str = "darija"
 
 
 class NewProjectRequest(BaseModel):
     audience: str = DEFAULT_AUDIENCE
     carry_solver_context: bool = False
+
+
+class RenameProjectRequest(BaseModel):
+    name: str
 
 
 class AddSceneRequest(BaseModel):
@@ -96,10 +138,12 @@ class RunSceneRequest(BaseModel):
     nudge_2: str = ""
     nudge_3: str = ""
     nudge_4: str = ""
+    nudge_5: str = ""
     force_fix_prompt: str = ""
     force_fix_image_path: str | None = None
     model_provider: str = "google"
     tts_provider: str = "local"
+    language: str = "darija"
     insert_shift: bool = False
 
 
@@ -112,7 +156,8 @@ def _read_run_info(run_dir: Path) -> dict | None:
     info_txt = run_dir / "run_info.txt"
     if info_json.exists():
         data = json.loads(info_json.read_text(encoding="utf-8"))
-        return {"query": data.get("query", ""), "audience": data.get("audience", DEFAULT_AUDIENCE)}
+        return {"query": data.get("query", ""), "audience": data.get("audience", DEFAULT_AUDIENCE),
+                "language": data.get("language", "darija")}
     elif info_txt.exists():
         info = {}
         for line in info_txt.read_text(encoding="utf-8").splitlines():
@@ -134,6 +179,12 @@ def _fork_run_dir(src_dir: Path, from_step: int) -> tuple[str, Path]:
         fname = _CHECKPOINT_FILES.get(step)
         if fname and (src_dir / fname).exists():
             shutil.copy2(src_dir / fname, dst_dir / fname)
+
+    # Step 3a (map requests) is part of step 3 — copy it whenever step 3 is being skipped
+    if from_step > 3:
+        fname_3a = _CHECKPOINT_FILES.get("3a")
+        if fname_3a and (src_dir / fname_3a).exists():
+            shutil.copy2(src_dir / fname_3a, dst_dir / fname_3a)
 
     if from_step > 2 and (src_dir / "audios").exists():
         shutil.copytree(src_dir / "audios", dst_dir / "audios", dirs_exist_ok=True)
@@ -179,6 +230,7 @@ def _run_pipeline_thread(
     force_fix_image: str | None = None,
     model_provider: str = "google",
     tts_provider: str = "local",
+    language: str = "darija",
 ):
     orig_stdout = sys.stdout
     orig_stderr = sys.stderr
@@ -186,7 +238,6 @@ def _run_pipeline_thread(
     sys.stdout = writer
     sys.stderr = writer
     try:
-        from agentic_video_gen.pipeline import run_pipeline
         run_dir = run_pipeline(
             query,
             audience_level=audience,
@@ -197,6 +248,7 @@ def _run_pipeline_thread(
             force_fix_image=force_fix_image or None,
             model_provider=model_provider,
             tts_provider=tts_provider,
+            language=language,
         )
         result_box["run_dir"] = run_dir
     except Exception as exc:
@@ -262,7 +314,6 @@ def _run_stitch_thread(project_id: str, log_q: queue.Queue, result_box: dict):
     sys.stdout = writer
     sys.stderr = writer
     try:
-        from agentic_video_gen.stitch import stitch_project_videos
         output_path = stitch_project_videos(project_id)
         result_box["video_path"] = str(output_path)
         log_q.put(f"\n✅ Stitch complete → {output_path}\n")
@@ -286,6 +337,7 @@ def _stream_pipeline_and_render_generator(
     force_fix_image: str | None = None,
     model_provider: str = "google",
     tts_provider: str = "local",
+    language: str = "darija",
 ) -> Generator[str, None, None]:
     log_q: queue.Queue = queue.Queue()
     result_box: dict = {}
@@ -297,6 +349,7 @@ def _stream_pipeline_and_render_generator(
             "run_id": run_id, "from_step": from_step, "nudges": nudges,
             "force_fix_prompt": force_fix_prompt, "force_fix_image": force_fix_image,
             "model_provider": model_provider, "tts_provider": tts_provider,
+            "language": language,
         },
         daemon=True,
     )
@@ -352,6 +405,23 @@ def _stream_pipeline_and_render_generator(
 
 
 # ---------------------------------------------------------------------------
+# Routes: Upload
+# ---------------------------------------------------------------------------
+
+UPLOADS_DIR = PROJECT_DIR / "uploads"
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """Save an uploaded file and return its server path."""
+    UPLOADS_DIR.mkdir(exist_ok=True)
+    suffix = Path(file.filename).suffix if file.filename else ".png"
+    dest = UPLOADS_DIR / f"{uuid.uuid4()}{suffix}"
+    content = await file.read()
+    dest.write_bytes(content)
+    return {"path": str(dest)}
+
+
+# ---------------------------------------------------------------------------
 # Routes: Runs
 # ---------------------------------------------------------------------------
 
@@ -383,7 +453,7 @@ def get_run(run_id: str):
         raise HTTPException(404, "Run not found")
 
     checkpoints = {}
-    step_names = {1: "Solver", 2: "Script", 3: "SVGs", 4: "Manim"}
+    step_names = {1: "Solver", 2: "Script", 3: "Maps", 4: "SVGs", 5: "Manim"}
     for s, fname in _CHECKPOINT_FILES.items():
         checkpoints[s] = {
             "name": step_names[s],
@@ -397,6 +467,7 @@ def get_run(run_id: str):
         "run_id": run_id,
         "query": info["query"],
         "audience": info["audience"],
+        "language": info.get("language", "darija"),
         "checkpoints": checkpoints,
         "has_scene": has_scene,
         "has_video": has_video,
@@ -413,11 +484,15 @@ def generate_video(req: GenerateRequest):
     if not req.query.strip():
         raise HTTPException(400, "Query cannot be empty")
 
+    nudges = {k: v for k, v in {1: req.nudge_1, 2: req.nudge_2, 3: req.nudge_3, 4: req.nudge_4, 5: req.nudge_5}.items() if v and v.strip()} or None
+
     return StreamingResponse(
         _stream_pipeline_and_render_generator(
             req.query, req.audience,
+            nudges=nudges,
             model_provider=req.model_provider,
             tts_provider=req.tts_provider,
+            language=req.language,
         ),
         media_type="text/event-stream",
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
@@ -435,7 +510,7 @@ def resume_video(req: ResumeRequest):
     if req.copy_run:
         run_id, run_dir = _fork_run_dir(run_dir, req.from_step)
 
-    nudges = {k: v for k, v in {1: req.nudge_1, 2: req.nudge_2, 3: req.nudge_3, 4: req.nudge_4}.items() if v and v.strip()} or None
+    nudges = {k: v for k, v in {1: req.nudge_1, 2: req.nudge_2, 3: req.nudge_3, 4: req.nudge_4, 5: req.nudge_5}.items() if v and v.strip()} or None
 
     def gen():
         if req.copy_run:
@@ -449,6 +524,7 @@ def resume_video(req: ResumeRequest):
             force_fix_image=req.force_fix_image_path or None,
             model_provider=req.model_provider,
             tts_provider=req.tts_provider,
+            language=req.language,
         )
 
     return StreamingResponse(
@@ -477,6 +553,7 @@ def list_projects():
             info = json.loads(info_path.read_text(encoding="utf-8"))
             projects.append({
                 "project_id": info["project_id"],
+                "name": info.get("name", ""),
                 "audience": info.get("audience", DEFAULT_AUDIENCE),
                 "carry_solver_context": info.get("carry_solver_context", False),
                 "scene_count": len(info.get("scenes", [])),
@@ -527,6 +604,7 @@ def get_project(project_id: str):
 
     return {
         "project_id": info["project_id"],
+        "name": info.get("name", ""),
         "audience": info.get("audience", DEFAULT_AUDIENCE),
         "carry_solver_context": info.get("carry_solver_context", False),
         "scenes": scenes,
@@ -535,8 +613,7 @@ def get_project(project_id: str):
 
 @app.post("/api/projects")
 def new_project(req: NewProjectRequest):
-    from agentic_video_gen.projects import create_project
-    project_id = create_project(
+    project_id, _ = create_project(
         audience=req.audience,
         carry_solver_context=req.carry_solver_context,
     )
@@ -549,7 +626,6 @@ def add_scene(project_id: str, req: AddSceneRequest):
     if not info_path.exists():
         raise HTTPException(404, "Project not found")
 
-    from agentic_video_gen.projects import add_native_scene
     scene_index = add_native_scene(
         project_id=project_id,
         query=req.query,
@@ -565,7 +641,6 @@ def import_scene(project_id: str, req: ImportSceneRequest):
     if not info_path.exists():
         raise HTTPException(404, "Project not found")
 
-    from agentic_video_gen.projects import import_scene as _import_scene
     source_path = (RUNS_DIR / req.source_path).resolve()
     scene_index = _import_scene(project_id=project_id, source_dir=source_path)
     return {"scene_index": scene_index}
@@ -577,8 +652,27 @@ def remove_scene(project_id: str, req: RemoveSceneRequest):
     if not info_path.exists():
         raise HTTPException(404, "Project not found")
 
-    from agentic_video_gen.projects import remove_scene as _remove_scene
     _remove_scene(project_id=project_id, scene_index=req.scene_index)
+    return {"ok": True}
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str):
+    project_dir = PROJECTS_DIR / project_id
+    if not project_dir.exists():
+        raise HTTPException(404, "Project not found")
+    shutil.rmtree(project_dir)
+    return {"ok": True}
+
+
+@app.patch("/api/projects/{project_id}/rename")
+def rename_project(project_id: str, req: RenameProjectRequest):
+    info_path = PROJECTS_DIR / project_id / "project_info.json"
+    if not info_path.exists():
+        raise HTTPException(404, "Project not found")
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["name"] = req.name.strip()
+    info_path.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True}
 
 
@@ -588,8 +682,7 @@ def fork_project(project_id: str):
     if not info_path.exists():
         raise HTTPException(404, "Project not found")
 
-    from agentic_video_gen.projects import fork_project as _fork_project
-    new_id = _fork_project(project_id=project_id)
+    new_id, _ = _fork_project(PROJECTS_DIR / project_id)
     return {"project_id": new_id}
 
 
@@ -599,8 +692,19 @@ def run_scene(project_id: str, req: RunSceneRequest):
     if not info_path.exists():
         raise HTTPException(404, "Project not found")
 
+    project_info = json.loads(info_path.read_text(encoding="utf-8"))
+    audience = project_info.get("audience", DEFAULT_AUDIENCE)
+    carry_solver_context = project_info.get("carry_solver_context", False)
+
+    # Resolve the query for this scene from the stored scene list
+    scenes = project_info.get("scenes", [])
+    scene_entry = next((s for s in scenes if s["scene_index"] == req.scene_index), None)
+    if scene_entry is None:
+        raise HTTPException(404, f"Scene {req.scene_index} not found in project")
+    scene_query = scene_entry["query"]
+
     nudges = {
-        k: v for k, v in {1: req.nudge_1, 2: req.nudge_2, 3: req.nudge_3, 4: req.nudge_4}.items()
+        k: v for k, v in {1: req.nudge_1, 2: req.nudge_2, 3: req.nudge_3, 4: req.nudge_4, 5: req.nudge_5}.items()
         if v and v.strip()
     } or None
 
@@ -614,16 +718,19 @@ def run_scene(project_id: str, req: RunSceneRequest):
         sys.stdout = writer
         sys.stderr = writer
         try:
-            from agentic_video_gen.projects import run_project_scene
             run_dir = run_project_scene(
                 project_id=project_id,
                 scene_index=req.scene_index,
+                query=scene_query,
+                audience_level=audience,
+                carry_solver_context=carry_solver_context,
                 from_step=req.from_step,
                 nudges=nudges,
                 force_fix_prompt=req.force_fix_prompt.strip() or None,
                 force_fix_image=req.force_fix_image_path or None,
                 model_provider=req.model_provider,
                 tts_provider=req.tts_provider,
+                language=req.language,
                 insert_shift=req.insert_shift,
             )
             result_box["run_dir"] = run_dir

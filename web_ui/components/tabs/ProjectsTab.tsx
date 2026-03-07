@@ -24,7 +24,7 @@ import { PipelineOptions } from "@/components/PipelineOptions";
 import { useSSE } from "@/hooks/useSSE";
 import { api, Project, ProjectDetail, SceneEntry, ImportableSource, STEP_LABELS } from "@/lib/api";
 import {
-  Loader2, Play, Square, RefreshCw, Plus, GitFork, Scissors, Download, Film
+  Loader2, Play, Square, RefreshCw, Plus, GitFork, Scissors, Download, Film, Pencil, Check, X, Trash2
 } from "lucide-react";
 
 const API_BASE = "http://localhost:8080";
@@ -34,8 +34,8 @@ function SceneCard({ scene, projectId, onRefresh }: {
   projectId: string;
   onRefresh: () => void;
 }) {
-  const steps = [1, 2, 3, 4] as const;
-  const stepNames = { 1: "Solver", 2: "Script", 3: "SVGs", 4: "Manim" };
+  const steps = [1, 2, 3, 4, 5] as const;
+  const stepNames = { 1: "Solver", 2: "Script", 3: "Maps", 4: "SVGs", 5: "Manim" };
 
   const handleRemove = async () => {
     if (!confirm(`Remove scene ${scene.scene_index}?`)) return;
@@ -130,6 +130,10 @@ export function ProjectsTab() {
   const [importSources, setImportSources] = useState<ImportableSource[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
 
+  // Rename
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+
   // New project form
   const [newAudience, setNewAudience] = useState("high school student");
   const [carrySolver, setCarrySolver] = useState(false);
@@ -144,7 +148,7 @@ export function ProjectsTab() {
   // Run scene form
   const [runSceneIndex, setRunSceneIndex] = useState("");
   const [runFromStep, setRunFromStep] = useState("1");
-  const [runNudges, setRunNudges] = useState({ 1: "", 2: "", 3: "", 4: "" });
+  const [runNudges, setRunNudges] = useState<Record<number, string>>({ 1: "", 2: "", 3: "", 4: "", 5: "" });
   const [runForceFix, setRunForceFix] = useState("");
   const [runForceFixImagePath, setRunForceFixImagePath] = useState<string | null>(null);
   const [runForceFixImagePreview, setRunForceFixImagePreview] = useState<string | null>(null);
@@ -175,11 +179,34 @@ export function ProjectsTab() {
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
   useEffect(() => { fetchImportSources(); }, [fetchImportSources]);
-  useEffect(() => { fetchDetail(selectedProjectId); }, [selectedProjectId, fetchDetail]);
+  useEffect(() => {
+    fetchDetail(selectedProjectId);
+    setRenaming(false);
+  }, [selectedProjectId, fetchDetail]);
+  useEffect(() => {
+    if (projectDetail) setRenameValue(projectDetail.name ?? "");
+  }, [projectDetail]);
 
   const refresh = () => {
     fetchProjects();
     if (selectedProjectId) fetchDetail(selectedProjectId);
+  };
+
+  const handleDeleteProject = async () => {
+    if (!selectedProjectId) return;
+    if (!confirm("Delete this project? This cannot be undone.")) return;
+    await api.deleteProject(selectedProjectId);
+    setSelectedProjectId("");
+    setProjectDetail(null);
+    await fetchProjects();
+  };
+
+  const handleRename = async () => {
+    if (!selectedProjectId) return;
+    await api.renameProject(selectedProjectId, renameValue);
+    setRenaming(false);
+    await fetchProjects();
+    await fetchDetail(selectedProjectId);
   };
 
   const handleNewProject = async () => {
@@ -213,16 +240,14 @@ export function ProjectsTab() {
 
   const handleRunScene = () => {
     if (!selectedProjectId || !runSceneIndex) return;
-    const nudges = Object.fromEntries(
-      Object.entries(runNudges).map(([k, v]) => [Number(k), v])
-    );
     start(`${API_BASE}/api/projects/${selectedProjectId}/run-scene`, {
       scene_index: parseInt(runSceneIndex),
       from_step: parseInt(runFromStep),
-      nudge_1: nudges[1] ?? "",
-      nudge_2: nudges[2] ?? "",
-      nudge_3: nudges[3] ?? "",
-      nudge_4: nudges[4] ?? "",
+      nudge_1: runNudges[1] ?? "",
+      nudge_2: runNudges[2] ?? "",
+      nudge_3: runNudges[3] ?? "",
+      nudge_4: runNudges[4] ?? "",
+      nudge_5: runNudges[5] ?? "",
       force_fix_prompt: runForceFix,
       force_fix_image_path: runForceFixImagePath,
       model_provider: runModelProvider,
@@ -270,7 +295,10 @@ export function ProjectsTab() {
               <SelectContent>
                 {projects.map((p) => (
                   <SelectItem key={p.project_id} value={p.project_id}>
-                    <span className="font-mono text-xs text-muted-foreground">{p.project_id.slice(0, 8)}…</span>
+                    {p.name
+                      ? <span className="font-medium">{p.name}</span>
+                      : <span className="font-mono text-xs text-muted-foreground">{p.project_id.slice(0, 8)}…</span>
+                    }
                     {" — "}
                     <span>{p.scene_count} scene(s)</span>
                   </SelectItem>
@@ -278,16 +306,50 @@ export function ProjectsTab() {
               </SelectContent>
             </Select>
             {selectedProjectId && projectDetail && (
-              <div className="text-xs text-muted-foreground space-y-0.5">
-                <p>Audience: {projectDetail.audience}</p>
-                <p>Carry solver: {projectDetail.carry_solver_context ? "Yes" : "No"}</p>
-                <p>{projectDetail.scenes.length} scene(s)</p>
+              <div className="space-y-2">
+                {renaming ? (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      autoFocus
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleRename(); if (e.key === "Escape") setRenaming(false); }}
+                      placeholder="Project name…"
+                      className="h-7 text-sm"
+                    />
+                    <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={handleRename}>
+                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    </Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => setRenaming(false)}>
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-medium">
+                      {projectDetail.name || <span className="text-muted-foreground italic">Unnamed project</span>}
+                    </span>
+                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => setRenaming(true)}>
+                      <Pencil className="h-3 w-3" />
+                    </Button>
+                  </div>
+                )}
+                <div className="text-xs text-muted-foreground space-y-0.5">
+                  <p>Audience: {projectDetail.audience}</p>
+                  <p>Carry solver: {projectDetail.carry_solver_context ? "Yes" : "No"}</p>
+                  <p>{projectDetail.scenes?.length ?? 0} scene(s)</p>
+                </div>
               </div>
             )}
             {selectedProjectId && (
-              <Button size="sm" variant="outline" onClick={handleFork} className="gap-1.5">
-                <GitFork className="h-3.5 w-3.5" /> Fork Project
-              </Button>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={handleFork} className="gap-1.5">
+                  <GitFork className="h-3.5 w-3.5" /> Fork Project
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleDeleteProject} className="gap-1.5 text-destructive hover:text-destructive border-destructive/40 hover:border-destructive">
+                  <Trash2 className="h-3.5 w-3.5" /> Delete
+                </Button>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -384,12 +446,12 @@ export function ProjectsTab() {
           </div>
 
           {/* Scene list */}
-          {projectDetail && projectDetail.scenes.length > 0 && (
+          {projectDetail && projectDetail.scenes?.length > 0 && (
             <div className="space-y-3">
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-                Scenes ({projectDetail.scenes.length})
+                Scenes ({projectDetail.scenes?.length ?? 0})
               </h3>
-              {projectDetail.scenes.map((scene) => (
+              {projectDetail.scenes?.map((scene) => (
                 <SceneCard
                   key={scene.scene_index}
                   scene={scene}
@@ -441,7 +503,7 @@ export function ProjectsTab() {
                   <AccordionTrigger className="text-sm">Per-step nudges (optional)</AccordionTrigger>
                   <AccordionContent>
                     <div className="space-y-3 pt-2">
-                      {([1, 2, 3, 4] as const).map((step) => (
+                      {([1, 2, 3, 4, 5] as const).map((step) => (
                         <div key={step} className="space-y-1.5">
                           <Label className="text-xs">Step {step} — {STEP_LABELS[step]}</Label>
                           <Input
