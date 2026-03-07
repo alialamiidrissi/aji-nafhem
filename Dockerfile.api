@@ -1,0 +1,31 @@
+# ── API / pipeline server ────────────────────────────────────────────────────
+# Uses the official Manim community image so all system deps (cairo, pango,
+# LaTeX, ffmpeg) are already present.
+FROM manimcommunity/manim:latest
+
+USER root
+WORKDIR /app
+
+# Fast Python package installer
+RUN pip install uv --quiet
+
+# Install project dependencies (manim already in base image, skip it)
+COPY pyproject.toml .
+RUN uv pip install --system --quiet \
+    "pydantic-ai[google,openai,openrouter]" \
+    tenacity httpx pydantic \
+    fastapi "uvicorn[standard]" \
+    python-dotenv soundfile requests python-multipart
+
+# Copy source
+COPY agentic_video_gen/ ./agentic_video_gen/
+COPY web_server.py .
+
+ENV PYTHONUNBUFFERED=1
+# MANIM_BIN defaults to whatever is on PATH in the base image
+ENV MANIM_BIN=manim
+# RUNS_DIR can be overridden to point at a mounted volume
+ENV RUNS_DIR=/app/agentic_video_gen/runs
+
+EXPOSE 8080
+CMD ["python", "web_server.py"]

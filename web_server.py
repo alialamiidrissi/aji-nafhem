@@ -37,7 +37,7 @@ logger = logging.getLogger("uvicorn.error")
 
 load_dotenv()
 
-MANIM_BIN = "/Users/aalamiid/miniconda3/envs/audio_tts/bin/manim"
+MANIM_BIN = os.environ.get("MANIM_BIN", "manim")
 PROJECT_DIR = Path(__file__).parent
 RUNS_DIR = Path(os.environ.get("RUNS_DIR", PROJECT_DIR / "agentic_video_gen" / "runs"))
 PROJECTS_DIR = RUNS_DIR / "projects"

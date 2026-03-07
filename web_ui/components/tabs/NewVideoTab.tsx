@@ -14,7 +14,7 @@ import { useSSE } from "@/hooks/useSSE";
 import { STEP_LABELS } from "@/lib/api";
 import { Loader2, Play, Square } from "lucide-react";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
 
 export function NewVideoTab() {
   const [query, setQuery] = useState("");

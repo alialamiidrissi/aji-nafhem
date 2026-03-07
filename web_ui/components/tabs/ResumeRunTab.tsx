@@ -25,7 +25,7 @@ import { api, Run, RunDetail, STEP_LABELS } from "@/lib/api";
 import { Loader2, Play, Square, RefreshCw } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
 
 export function ResumeRunTab() {
   const [runs, setRuns] = useState<Run[]>([]);

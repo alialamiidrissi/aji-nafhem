@@ -1,0 +1,35 @@
+# ── Coqui XTTS TTS server (optional) ────────────────────────────────────────
+# Defaults to CPU. For CUDA, build with:
+#   --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+# and add the appropriate `deploy.resources` section in docker-compose.yml.
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsndfile1 ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install uv --quiet
+
+WORKDIR /app
+
+# Torch index URL controls CPU vs CUDA build
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+RUN uv pip install --system --quiet torch --index-url ${TORCH_INDEX_URL}
+
+COPY requirements-tts-server.txt .
+# Install remaining deps (torch already installed above)
+RUN uv pip install --system --quiet \
+    numpy scipy fastapi "uvicorn[standard]" coqui-tts
+
+COPY coqui_server.py .
+
+# Runtime device selection: cpu | cuda | mps
+ENV TORCH_DEVICE=cpu
+ENV PYTHONUNBUFFERED=1
+
+# Model files must be mounted at /app/model (model.pth, config.json,
+# vocab.json, speaker_reference.wav)
+VOLUME ["/app/model"]
+
+EXPOSE 8000
+CMD ["python", "coqui_server.py"]

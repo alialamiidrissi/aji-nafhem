@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+
+# Data (mounted as volumes)
+agentic_video_gen/runs/
+model/
+uploads/
+media/
+data/
+
+# Frontend (built separately)
+web_ui/
+
+# Dev artifacts
+.git/
+.DS_Store
+*.ipynb
+junk/
+manim_demos/
+test_*.py

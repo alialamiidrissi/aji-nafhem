@@ -27,7 +27,7 @@ import {
   Loader2, Play, Square, RefreshCw, Plus, GitFork, Scissors, Download, Film, Pencil, Check, X, Trash2
 } from "lucide-react";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
 
 function SceneCard({ scene, projectId, onRefresh }: {
   scene: SceneEntry;
