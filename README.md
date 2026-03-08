@@ -11,11 +11,11 @@ Two example outputs generated entirely by the pipeline — Darija voiceover + Ma
 
 **Geopolitics** — explaining a geopolitical concept with animated maps and text:
 
-<video src="samples/geopolitics.mp4" controls width="720"></video>
+<video src="https://github.com/user-attachments/assets/75fc97fe-7908-4f86-8a2f-fb954a13ad76" controls width="720"></video>
 
 **Math Problem** — step-by-step worked math with equations and visual aids:
 
-<video src="samples/math problem.mp4" controls width="720"></video>
+<video src="https://github.com/user-attachments/assets/f16e56b2-d11e-4ea1-ae81-d6705320037f" controls width="720"></video>
 
 ---
 
