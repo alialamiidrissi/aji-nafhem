@@ -21,28 +21,31 @@ Two example outputs generated entirely by the pipeline — Darija voiceover + Ma
 
 ## How It Works
 
-The pipeline runs five sequential AI-powered steps:
+The pipeline runs six sequential AI-powered steps:
 
 ```
 Topic / Question
       │
       ▼
-[Step 1] Analytical Solver        → breaks the topic into logical steps
+[Step 1] Analytical Solver        → breaks the topic into logical teaching steps
       │
       ▼
-[Step 2] Script & TTS             → writes a Darija voiceover script + generates audio
+[Step 2] Script & TTS             → writes a Darija voiceover script + synthesizes audio
       │
       ▼
 [Step 2r] Script Review           → checks script↔visual coherence, fixes tashkeel & pacing
       │
       ▼
-[Step 3] SVG Asset Generator      → creates flat-design vector illustrations
+[Step 3] Map Generator            → detects geographic requirements, renders map PNGs
+      │                              (cartopy + matplotlib — no API needed)
+      ▼
+[Step 4] SVG Asset Generator      → creates flat-design vector illustrations
       │
       ▼
-[Step 4] Manim Code Generator     → writes a complete animated Python scene
-      │
+[Step 5] Manim Code Generator     → writes a complete animated Python scene,
+      │                              with map images attached for accurate coordinate placement
       ▼
-[Step 5] Compile & Auto-Fix       → runs Manim, self-corrects errors (up to 3 retries)
+[Step 6] Compile & Auto-Fix       → runs Manim, self-corrects errors (up to 3 retries)
       │
       ▼
   MP4 Video
@@ -56,7 +59,9 @@ Each step saves a JSON checkpoint so runs can be resumed or forked from any poin
 
 - **Moroccan Darija narration** — scripts written and voiced in Darija Arabic with full tashkeel for TTS clarity
 - **Script review agent** — automatically checks that each spoken segment matches its visual action, fixes pacing, and enforces TTS-friendly phonetics
-- **Agentic self-correction** — Manim compilation errors are automatically diagnosed and patched by a fix agent
+- **Geographic map generation** — automatically detects when a topic needs maps, renders them with cartopy + matplotlib (no external API), and passes the PNG renders to the Manim agent for accurate coordinate placement
+- **Agentic self-correction** — Manim compilation errors are automatically diagnosed and patched by a fix agent (up to 3 retries)
+- **Local TTS** — runs fully on-device using Apple MPS or CUDA; no API cost
 - **Multi-provider LLM support** — switch between Google Gemini, OpenAI, or OpenRouter via a UI dropdown or environment variable
 - **Multi-scene projects** — build long-form videos from multiple scenes, with optional context carry-over between scenes
 - **Resumable runs** — every step is checkpointed; restart from any step without re-running earlier ones
