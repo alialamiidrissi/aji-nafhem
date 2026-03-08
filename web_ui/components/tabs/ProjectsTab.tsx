@@ -65,7 +65,7 @@ function SceneCard({ scene, projectId, onRefresh }: {
         </div>
       </CardHeader>
       <CardContent className="space-y-3 pt-0">
-        <Markdown className="prose prose-sm prose-invert max-w-none text-muted-foreground leading-relaxed">{scene.query}</Markdown>
+        <Markdown className="prose prose-sm prose-invert max-w-none text-muted-foreground leading-relaxed" showCopy>{scene.query}</Markdown>
 
         <div className="flex flex-wrap gap-1.5">
           {steps.map((s) => (
@@ -88,7 +88,7 @@ function SceneCard({ scene, projectId, onRefresh }: {
                   {((scene.solver as { steps?: Array<{ step_number: number; concept: string; description: string }> }).steps ?? []).map((st) => (
                     <li key={st.step_number}>
                       <strong>{st.concept}</strong>:{" "}
-                      <Markdown className="prose prose-xs prose-invert max-w-none">{st.description}</Markdown>
+                      <Markdown className="prose prose-xs prose-invert max-w-none" showCopy>{st.description}</Markdown>
                     </li>
                   ))}
                 </ol>
@@ -107,9 +107,9 @@ function SceneCard({ scene, projectId, onRefresh }: {
                 <ol className="text-xs space-y-3 list-decimal list-inside">
                   {((scene.script as { segments?: Array<{ id: string; script: string; visual_action: string }> }).segments ?? []).map((seg) => (
                     <li key={seg.id}>
-                      <Markdown className="prose prose-xs prose-invert max-w-none">{seg.script}</Markdown>
+                      <Markdown className="prose prose-xs prose-invert max-w-none" showCopy>{seg.script}</Markdown>
                       <div className="italic text-muted-foreground ml-4 mt-0.5">
-                        ↪ <Markdown className="prose prose-xs prose-invert max-w-none inline-block">{seg.visual_action}</Markdown>
+                        ↪ <Markdown className="prose prose-xs prose-invert max-w-none inline-block" showCopy>{seg.visual_action}</Markdown>
                       </div>
                     </li>
                   ))}

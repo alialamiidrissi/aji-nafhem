@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LogStream } from "@/components/LogStream";
 import { VideoPlayer } from "@/components/VideoPlayer";
+import { Markdown } from "@/components/Markdown";
 import { PipelineOptions } from "@/components/PipelineOptions";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useSSE } from "@/hooks/useSSE";
@@ -58,6 +59,12 @@ export function NewVideoTab() {
               onChange={(e) => setQuery(e.target.value)}
               className="resize-none"
             />
+            {query.trim() && (
+              <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1.5">Preview</p>
+                <Markdown className="prose prose-sm prose-invert max-w-none" showCopy>{query}</Markdown>
+              </div>
+            )}
           </div>
 
           <div className="space-y-1.5">

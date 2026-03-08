@@ -5,6 +5,20 @@
 
 ---
 
+## Samples
+
+Two example outputs generated entirely by the pipeline — Darija voiceover + Manim animations, no manual editing.
+
+**Geopolitics** — explaining a geopolitical concept with animated maps and text:
+
+<video src="samples/geopolitics.mp4" controls width="720"></video>
+
+**Math Problem** — step-by-step worked math with equations and visual aids:
+
+<video src="samples/math problem.mp4" controls width="720"></video>
+
+---
+
 ## How It Works
 
 The pipeline runs five sequential AI-powered steps:

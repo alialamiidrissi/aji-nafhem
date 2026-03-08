@@ -23,7 +23,7 @@ import { PipelineOptions } from "@/components/PipelineOptions";
 import { useSSE } from "@/hooks/useSSE";
 import { api, Run, RunDetail, STEP_LABELS } from "@/lib/api";
 import { Loader2, Play, Square, RefreshCw } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import { Markdown } from "@/components/Markdown";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080";
 
@@ -131,9 +131,7 @@ export function ResumeRunTab() {
             <div className="rounded-lg border p-4 space-y-3 bg-muted/30">
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground font-mono">{runDetail.run_id}</p>
-                <div className="prose prose-sm prose-invert max-w-none">
-                  <ReactMarkdown>{runDetail.query}</ReactMarkdown>
-                </div>
+                <Markdown className="prose prose-sm prose-invert max-w-none" showCopy>{runDetail.query}</Markdown>
                 <p className="text-xs text-muted-foreground">Audience: {runDetail.audience} · Language: {runDetail.language ?? "darija"}</p>
               </div>
               <div className="flex flex-wrap gap-2">
