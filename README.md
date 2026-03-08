@@ -156,9 +156,17 @@ ELEVENLABS_MODEL_ID=eleven_multilingual_v2
 python test_apis.py
 ```
 
-### TTS Server
+### TTS — Local or Cloud
 
-Aji Nafhem uses a local [Coqui XTTS](https://github.com/coqui-ai/TTS) model fine-tuned on Moroccan Darija — [`medmac01/darija_xtt_2.0`](https://huggingface.co/medmac01/darija_xtt_2.0).
+Two options, switchable from the UI or via `tts_provider`:
+
+#### Option A — Local Coqui XTTS (default, free, runs on Mac or GPU)
+
+Uses [`medmac01/darija_xtt_2.0`](https://huggingface.co/medmac01/darija_xtt_2.0) — a [Coqui XTTS](https://github.com/coqui-ai/TTS) model fine-tuned specifically on Moroccan Darija, hosted on HuggingFace. Runs fully locally with no API costs:
+
+- **Apple Silicon** — uses MPS automatically
+- **CUDA GPU** — detected and used automatically
+- **CPU fallback** — works everywhere, just slower
 
 ```bash
 # Install TTS server dependencies (torch + coqui-tts)
@@ -167,7 +175,7 @@ uv pip install -e ".[tts-server]"
 uv pip install -r requirements-tts-server.txt
 ```
 
-**Required model files** — place under `model/` in the project root:
+**Required model files** — download from HuggingFace and place under `model/` in the project root:
 
 ```
 model/
@@ -178,11 +186,21 @@ model/
 ```
 
 ```bash
-# Start TTS server (port 8000, Apple MPS by default)
+# Start TTS server (port 8000)
 python coqui_server.py
 ```
 
 > If the TTS server is unreachable, the pipeline substitutes 1-second silent WAV files so Manim can still compile — the video will have no voiceover but all animations will render.
+
+#### Option B — ElevenLabs
+
+Set `tts_provider=elevenlabs` in the UI (or pass `--tts-provider elevenlabs` on the CLI). Requires an API key:
+
+```bash
+ELEVENLABS_API_KEY=your_key_here
+ELEVENLABS_VOICE_ID=cgSgspJ2msm6clMCkdW9
+ELEVENLABS_MODEL_ID=eleven_multilingual_v2
+```
 
 ---
 
@@ -272,7 +290,7 @@ Override OpenRouter models via `OPENROUTER_FLASH_MODEL` / `OPENROUTER_PRO_MODEL`
 
 | Option | Backend |
 |--------|---------|
-| `local` | Coqui XTTS at `localhost:8000` (default) |
+| `local` | Coqui XTTS running locally on Mac (MPS) or CUDA GPU — free, no API key needed |
 | `elevenlabs` | ElevenLabs API — requires `ELEVENLABS_API_KEY`; MP3 auto-converted to WAV |
 
 ---
