@@ -17,6 +17,7 @@ from agentic_video_gen.schemas import (
     ManimPatch,
 )
 from agentic_video_gen.languages import LanguageConfig, get_language, DEFAULT_LANGUAGE
+import threading
 import httpx
 from tenacity import (
     retry,
@@ -24,6 +25,17 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+
+_tls = threading.local()
+
+
+def set_stop_event(ev) -> None:
+    """Call from the pipeline thread before each agent.run_sync() to enable cancellation."""
+    _tls.stop_event = ev
+
+
+def _get_stop_event():
+    return getattr(_tls, "stop_event", None)
 
 
 class _RetryTransport(httpx.AsyncBaseTransport):
@@ -39,6 +51,9 @@ class _RetryTransport(httpx.AsyncBaseTransport):
         reraise=True,
     )
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        stop_ev = _get_stop_event()
+        if stop_ev and stop_ev.is_set():
+            raise httpx.RequestError("Pipeline stopped by user.", request=request)
         response = await self._inner.handle_async_request(request)
         if response.status_code in (429, 500, 502, 503, 504):
             print(f"----HTTP Error: {response.status_code}------")

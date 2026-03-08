@@ -4,9 +4,19 @@ import re
 import sys
 import uuid
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
+
+
+class PipelineStopped(Exception):
+    """Raised when the pipeline is cancelled via a stop event."""
+
+
+def _check_stop(stop_event: threading.Event | None) -> None:
+    if stop_event and stop_event.is_set():
+        raise PipelineStopped("Pipeline stopped by user.")
 
 from agentic_video_gen.schemas import (
     SolvedSteps,
@@ -27,6 +37,7 @@ from agentic_video_gen.agents import (
     get_svg_agent,
     get_manim_agent,
     get_manim_fix_agent,
+    set_stop_event,
 )
 from agentic_video_gen.utils import generate_sounds_from_api, setup_assets_impl
 
@@ -175,6 +186,7 @@ def run_pipeline(
     model_provider: str = "google",
     tts_provider: str = "local",
     language: str = DEFAULT_LANGUAGE,
+    stop_event: threading.Event | None = None,
 ):
     """
     Runs the full educational video generation pipeline.
@@ -221,6 +233,9 @@ def run_pipeline(
 
     lang_cfg = get_language(language)
 
+    # Register stop event on this thread so the HTTP transport can abort in-flight requests
+    set_stop_event(stop_event)
+
     # Write run metadata as JSON so multi-line queries are handled correctly
     with open(run_dir / "run_info.json", "w", encoding="utf-8") as f:
         json.dump({"run_id": run_id, "query": query, "audience": audience_level,
@@ -252,6 +267,8 @@ def run_pipeline(
     print(f"  Topic: {solved_steps.topic}")
     for step in solved_steps.steps:
         print(f"  Step {step.step_number} [{step.concept}]: {step.description[:80]}...")
+
+    _check_stop(stop_event)
 
     # --------------------------------------------------
     # Node 2: Script & TTS Generator
@@ -289,6 +306,8 @@ def run_pipeline(
     for seg in script.segments:
         print(f"  [{seg.id}] {seg.script[:40]}...")
 
+    _check_stop(stop_event)
+
     # --------------------------------------------------
     # Node 3: Map Request Agent
     # --------------------------------------------------
@@ -316,6 +335,8 @@ def run_pipeline(
         print("\n[Step 3] Loading from checkpoint (skipped)...")
         map_requests: MapRequestList = _load_checkpoint(run_dir, 3)
         map_asset_metadata = [_map_request_to_metadata(req) for req in map_requests.requests]
+
+    _check_stop(stop_event)
 
     # --------------------------------------------------
     # Node 4: SVG Asset Generator
@@ -363,6 +384,8 @@ def run_pipeline(
     ]
     # Map PNG assets come first so the Manim agent sees them prominently
     asset_metadata_list = [m.model_dump() for m in map_asset_metadata] + svg_metadata
+
+    _check_stop(stop_event)
 
     # --------------------------------------------------
     # Node 5: Manim Code Generator
@@ -446,6 +469,7 @@ def run_pipeline(
             out_file.write_text(patched_code, encoding="utf-8")
 
         for attempt in range(max_retries):
+            _check_stop(stop_event)
             print(f"  Attempt {attempt + 1}/{max_retries}...")
             compilation = subprocess.run(
                 [manim_bin, "-ql", "--dry_run", "--verbosity", "WARNING", str(out_file), "GeneratedEducationalScene"],
@@ -470,6 +494,7 @@ def run_pipeline(
                 )
                 fix_result = get_manim_fix_agent(model_provider).run_sync(_fix_prompt)
                 _log_model_call(run_dir, "manim_fix", _fix_prompt, fix_result)
+                _check_stop(stop_event)
 
                 patch = fix_result.output
                 print(f"  Fix explanation: {patch.explanation}")

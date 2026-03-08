@@ -316,6 +316,7 @@ def run_project_scene(
     model_provider: str = "google",
     tts_provider: str = "local",
     language: str = "darija",
+    stop_event=None,
 ) -> Path:
     """Run (or resume) a native scene within a project.
 
@@ -355,6 +356,7 @@ def run_project_scene(
         model_provider=model_provider,
         tts_provider=tts_provider,
         language=language,
+        stop_event=stop_event,
     )
 
     print(f"[project] Scene {scene_index} complete → {run_dir}")

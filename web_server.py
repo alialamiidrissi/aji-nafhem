@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from agentic_video_gen.pipeline import run_pipeline
+from agentic_video_gen.pipeline import run_pipeline, PipelineStopped
 from agentic_video_gen.stitch import stitch_project_videos
 from agentic_video_gen.projects import (
     create_project,
@@ -33,6 +33,9 @@ from agentic_video_gen.projects import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("uvicorn.error")
+
+# job_id → stop event for active pipeline runs
+_active_jobs: dict[str, threading.Event] = {}
 
 
 load_dotenv()
@@ -231,6 +234,7 @@ def _run_pipeline_thread(
     model_provider: str = "google",
     tts_provider: str = "local",
     language: str = "darija",
+    stop_event: threading.Event | None = None,
 ):
     orig_stdout = sys.stdout
     orig_stderr = sys.stderr
@@ -249,20 +253,28 @@ def _run_pipeline_thread(
             model_provider=model_provider,
             tts_provider=tts_provider,
             language=language,
+            stop_event=stop_event,
         )
         result_box["run_dir"] = run_dir
+    except PipelineStopped:
+        log_q.put("\n🛑 Pipeline stopped by user.\n")
+        result_box["stopped"] = True
     except Exception as exc:
-        log_q.put(f"\n❌ Pipeline error: {exc}\n")
-        import traceback
-        log_q.put(traceback.format_exc())
-        result_box["error"] = str(exc)
+        if stop_event and stop_event.is_set():
+            log_q.put("\n🛑 Pipeline stopped by user.\n")
+            result_box["stopped"] = True
+        else:
+            log_q.put(f"\n❌ Pipeline error: {exc}\n")
+            import traceback
+            log_q.put(traceback.format_exc())
+            result_box["error"] = str(exc)
     finally:
         sys.stdout = orig_stdout
         sys.stderr = orig_stderr
         log_q.put(None)
 
 
-def _run_render_thread(run_dir: Path, log_q: queue.Queue, result_box: dict):
+def _run_render_thread(run_dir: Path, log_q: queue.Queue, result_box: dict, stop_event: threading.Event | None = None):
     out_file = run_dir / "generated_scene.py"
     run_env = {**os.environ, "MANIM_RUN_DIR": str(run_dir.resolve())}
 
@@ -281,6 +293,12 @@ def _run_render_thread(run_dir: Path, log_q: queue.Queue, result_box: dict):
     )
 
     for line in proc.stdout:
+        if stop_event and stop_event.is_set():
+            proc.terminate()
+            log_q.put("\n🛑 Render stopped by user.\n")
+            result_box["stopped"] = True
+            log_q.put(None)
+            return
         log_q.put(line)
 
     proc.wait()
@@ -339,69 +357,82 @@ def _stream_pipeline_and_render_generator(
     tts_provider: str = "local",
     language: str = "darija",
 ) -> Generator[str, None, None]:
-    log_q: queue.Queue = queue.Queue()
-    result_box: dict = {}
+    job_id = str(uuid.uuid4())
+    stop_event = threading.Event()
+    _active_jobs[job_id] = stop_event
 
-    t = threading.Thread(
-        target=_run_pipeline_thread,
-        args=(query, audience, log_q, result_box),
-        kwargs={
-            "run_id": run_id, "from_step": from_step, "nudges": nudges,
-            "force_fix_prompt": force_fix_prompt, "force_fix_image": force_fix_image,
-            "model_provider": model_provider, "tts_provider": tts_provider,
-            "language": language,
-        },
-        daemon=True,
-    )
-    t.start()
+    try:
+        log_q: queue.Queue = queue.Queue()
+        result_box: dict = {}
 
-    yield _sse_event("Starting pipeline...")
+        t = threading.Thread(
+            target=_run_pipeline_thread,
+            args=(query, audience, log_q, result_box),
+            kwargs={
+                "run_id": run_id, "from_step": from_step, "nudges": nudges,
+                "force_fix_prompt": force_fix_prompt, "force_fix_image": force_fix_image,
+                "model_provider": model_provider, "tts_provider": tts_provider,
+                "language": language, "stop_event": stop_event,
+            },
+            daemon=True,
+        )
+        t.start()
 
-    while True:
-        try:
-            msg = log_q.get(timeout=0.2)
-        except queue.Empty:
-            continue
-        if msg is None:
-            break
-        yield _sse_event(msg)
+        yield f"event: job_id\ndata: {job_id}\n\n"
+        yield _sse_event("Starting pipeline...")
 
-    t.join()
+        while True:
+            try:
+                msg = log_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if msg is None:
+                break
+            yield _sse_event(msg)
 
-    if "error" in result_box:
-        yield f"event: error\ndata: {result_box['error']}\n\n"
-        return
+        t.join()
 
-    run_dir: Path = result_box["run_dir"]
-    run_id_final = run_dir.name
-    yield f"event: run_id\ndata: {run_id_final}\n\n"
+        if result_box.get("stopped"):
+            yield "event: done\ndata: done\n\n"
+            return
 
-    log_q2: queue.Queue = queue.Queue()
-    result_box2: dict = {}
+        if "error" in result_box:
+            yield f"event: error\ndata: {result_box['error']}\n\n"
+            return
 
-    t2 = threading.Thread(
-        target=_run_render_thread,
-        args=(run_dir, log_q2, result_box2),
-        daemon=True,
-    )
-    t2.start()
+        run_dir: Path = result_box["run_dir"]
+        run_id_final = run_dir.name
+        yield f"event: run_id\ndata: {run_id_final}\n\n"
 
-    while True:
-        try:
-            msg = log_q2.get(timeout=0.2)
-        except queue.Empty:
-            continue
-        if msg is None:
-            break
-        yield _sse_event(msg)
+        log_q2: queue.Queue = queue.Queue()
+        result_box2: dict = {}
 
-    t2.join()
+        t2 = threading.Thread(
+            target=_run_render_thread,
+            args=(run_dir, log_q2, result_box2),
+            kwargs={"stop_event": stop_event},
+            daemon=True,
+        )
+        t2.start()
 
-    if "video_path" in result_box2:
-        rel = Path(result_box2["video_path"]).resolve().relative_to(RUNS_DIR.resolve())
-        yield f"event: video\ndata: /api/media/{rel}\n\n"
+        while True:
+            try:
+                msg = log_q2.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if msg is None:
+                break
+            yield _sse_event(msg)
 
-    yield "event: done\ndata: done\n\n"
+        t2.join()
+
+        if "video_path" in result_box2:
+            rel = Path(result_box2["video_path"]).resolve().relative_to(RUNS_DIR.resolve())
+            yield f"event: video\ndata: /api/media/{rel}\n\n"
+
+        yield "event: done\ndata: done\n\n"
+    finally:
+        _active_jobs.pop(job_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +528,14 @@ def generate_video(req: GenerateRequest):
         media_type="text/event-stream",
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
+
+
+@app.post("/api/stop/{job_id}")
+def stop_job(job_id: str):
+    ev = _active_jobs.get(job_id)
+    if ev:
+        ev.set()
+    return {"ok": True}
 
 
 @app.post("/api/resume")
@@ -708,6 +747,10 @@ def run_scene(project_id: str, req: RunSceneRequest):
         if v and v.strip()
     } or None
 
+    job_id = str(uuid.uuid4())
+    stop_event = threading.Event()
+    _active_jobs[job_id] = stop_event
+
     log_q: queue.Queue = queue.Queue()
     result_box: dict = {}
 
@@ -732,65 +775,82 @@ def run_scene(project_id: str, req: RunSceneRequest):
                 tts_provider=req.tts_provider,
                 language=req.language,
                 insert_shift=req.insert_shift,
+                stop_event=stop_event,
             )
             result_box["run_dir"] = run_dir
+        except PipelineStopped:
+            log_q.put("\n🛑 Pipeline stopped by user.\n")
+            result_box["stopped"] = True
         except Exception as exc:
-            log_q.put(f"\n❌ Error: {exc}\n")
-            import traceback
-            log_q.put(traceback.format_exc())
-            result_box["error"] = str(exc)
+            if stop_event and stop_event.is_set():
+                log_q.put("\n🛑 Pipeline stopped by user.\n")
+                result_box["stopped"] = True
+            else:
+                log_q.put(f"\n❌ Error: {exc}\n")
+                import traceback
+                log_q.put(traceback.format_exc())
+                result_box["error"] = str(exc)
         finally:
             sys.stdout = orig_stdout
             sys.stderr = orig_stderr
             log_q.put(None)
 
     def gen():
-        t = threading.Thread(target=_thread, daemon=True)
-        t.start()
+        try:
+            t = threading.Thread(target=_thread, daemon=True)
+            t.start()
 
-        yield _sse_event(f"Starting scene {req.scene_index} pipeline...")
+            yield f"event: job_id\ndata: {job_id}\n\n"
+            yield _sse_event(f"Starting scene {req.scene_index} pipeline...")
 
-        while True:
-            try:
-                msg = log_q.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if msg is None:
-                break
-            yield _sse_event(msg)
+            while True:
+                try:
+                    msg = log_q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if msg is None:
+                    break
+                yield _sse_event(msg)
 
-        t.join()
+            t.join()
 
-        if "error" in result_box:
-            yield f"event: error\ndata: {result_box['error']}\n\n"
-            return
+            if result_box.get("stopped"):
+                yield "event: done\ndata: done\n\n"
+                return
 
-        run_dir: Path = result_box["run_dir"]
+            if "error" in result_box:
+                yield f"event: error\ndata: {result_box['error']}\n\n"
+                return
 
-        log_q2: queue.Queue = queue.Queue()
-        result_box2: dict = {}
+            run_dir: Path = result_box["run_dir"]
 
-        t2 = threading.Thread(
-            target=_run_render_thread,
-            args=(run_dir, log_q2, result_box2),
-            daemon=True,
-        )
-        t2.start()
+            log_q2: queue.Queue = queue.Queue()
+            result_box2: dict = {}
 
-        while True:
-            try:
-                msg = log_q2.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if msg is None:
-                break
-            yield _sse_event(msg)
+            t2 = threading.Thread(
+                target=_run_render_thread,
+                args=(run_dir, log_q2, result_box2),
+                kwargs={"stop_event": stop_event},
+                daemon=True,
+            )
+            t2.start()
 
-        t2.join()
+            while True:
+                try:
+                    msg = log_q2.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if msg is None:
+                    break
+                yield _sse_event(msg)
 
-        if "video_path" in result_box2:
-            rel = Path(result_box2["video_path"]).relative_to(PROJECT_DIR)
-            yield f"event: video\ndata: /api/media/{rel}\n\n"
+            t2.join()
+
+            if "video_path" in result_box2:
+                rel = Path(result_box2["video_path"]).relative_to(PROJECT_DIR)
+                yield f"event: video\ndata: /api/media/{rel}\n\n"
+        finally:
+            _active_jobs.pop(job_id, None)
 
         yield "event: done\ndata: done\n\n"
 

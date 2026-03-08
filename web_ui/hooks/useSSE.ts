@@ -7,6 +7,7 @@ interface SSEState {
   running: boolean;
   videoUrl: string | null;
   runId: string | null;
+  jobId: string | null;
   error: string | null;
 }
 
@@ -16,6 +17,7 @@ export function useSSE() {
     running: false,
     videoUrl: null,
     runId: null,
+    jobId: null,
     error: null,
   });
   const abortRef = useRef<AbortController | null>(null);
@@ -26,7 +28,7 @@ export function useSSE() {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      setState({ logs: "", running: true, videoUrl: null, runId: null, error: null });
+      setState({ logs: "", running: true, videoUrl: null, runId: null, jobId: null, error: null });
 
       try {
         const res = await fetch(url, {
@@ -77,6 +79,8 @@ export function useSSE() {
               setState((s) => ({ ...s, videoUrl: data }));
             } else if (eventType === "run_id") {
               setState((s) => ({ ...s, runId: data }));
+            } else if (eventType === "job_id") {
+              setState((s) => ({ ...s, jobId: data }));
             } else if (eventType === "error") {
               setState((s) => ({ ...s, error: data }));
             } else if (eventType === "done") {
@@ -100,8 +104,13 @@ export function useSSE() {
   );
 
   const stop = useCallback(() => {
+    setState((s) => {
+      if (s.jobId) {
+        fetch(`/api/stop/${s.jobId}`, { method: "POST" }).catch(() => {});
+      }
+      return { ...s, running: false };
+    });
     abortRef.current?.abort();
-    setState((s) => ({ ...s, running: false }));
   }, []);
 
   return { ...state, start, stop };
