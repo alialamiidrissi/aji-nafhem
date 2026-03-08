@@ -395,7 +395,7 @@ def run_pipeline(
     if from_step <= 5:
         print("\n[Step 5] Generating Manim scene code...")
         manim_agent = get_manim_agent(model_provider, lang_cfg)
-        _prompt5 = (
+        _prompt5_text = (
             f"Audience Level: {audience_level}\n"
             f"Original Query: {query}\n\n"
             f"Analytical Solution:\n{solved_steps.model_dump_json(indent=2)}\n\n"
@@ -405,6 +405,17 @@ def run_pipeline(
             f"{asset_metadata_list}\n\n"
             f"Run directory (pass as run_dir to super().__init__ or handle via env): {run_dir}"
         ) + _ctx_block + _nudge(5)
+
+        # Attach map PNG images so the agent can visually reason about geographic
+        # layout and place Manim objects (paths, arrows, labels) accurately.
+        _map_images: list[BinaryContent] = []
+        for req in map_requests.requests:
+            map_path = assets_dir / req.name
+            if map_path.exists():
+                _map_images.append(BinaryContent(data=map_path.read_bytes(), media_type="image/png"))
+                print(f"  [Step 5] Attaching map image for context: {req.name}")
+
+        _prompt5 = [_prompt5_text] + _map_images if _map_images else _prompt5_text
         manim_result = manim_agent.run_sync(_prompt5)
         manim_code: ManimCode = manim_result.output
         _log_model_call(run_dir, 5, _prompt5, manim_result)
@@ -509,7 +520,10 @@ def run_pipeline(
                 print(f"  Applied {applied}/{len(patch.changes)} patch(es).")
                 out_file.write_text(patched_code, encoding="utf-8")
         else:
-            print("\n⚠️  Could not compile after max retries. Inspect the file manually.")
+            raise RuntimeError(
+                f"Manim compilation failed after {max_retries} attempts. "
+                "Inspect the generated scene file manually."
+            )
 
     print(f"\nDone! Run artifacts saved to: {run_dir}/")
     print("To render the video, run:")

@@ -182,6 +182,9 @@ def generate_map(request: MapRequest, output_path: Path) -> Path:
 
     # --- Water labels ---
     for label, coords in request.water_labels.items():
+        if not coords:
+            print(f"[map_gen] Skipping water label '{label}' — coords is None/empty")
+            continue
         lon, lat = coords[0], coords[1]
         if tracker.try_place(lon, lat):
             ax.text(lon, lat, label,

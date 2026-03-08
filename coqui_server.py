@@ -28,7 +28,13 @@ vocab_path = base_path / 'vocab.json'
 
 config = XttsConfig()
 config.load_json(str(config_path))
-device = os.environ.get("TORCH_DEVICE", "cpu")
+if torch.cuda.is_available():
+    device = "cuda"
+elif torch.backends.mps.is_available():
+    device = "mps"
+else:
+    device = "cpu"
+device = os.environ.get("TORCH_DEVICE", device)
 
 print(f"Loading model to {device}...")
 model = Xtts.init_from_config(config)
